@@ -14,6 +14,7 @@ const gifRoutes = require("./routes/gifs");
 const profileRoutes = require("./routes/profile");
 const playbackRoutes = require("./routes/playback");
 const conversationsRoutes = require("./routes/conversations");
+const starredRoutes = require("./routes/starred");
 const pool = require("./db/pool");
 const { setIO } = require("./realtime");
 
@@ -46,6 +47,7 @@ app.use("/api/gifs", gifRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/groups", playbackRoutes);
 app.use("/api/conversations", conversationsRoutes);
+app.use("/api/starred-messages", starredRoutes);
 
 // Serves uploaded video/audio files directly, e.g. /uploads/posts/abc123.mp4
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));

@@ -301,3 +301,51 @@ export function changeGroupMemberRole(token, groupId, username, role) {
     body: JSON.stringify({ role }),
   });
 }
+
+export function forwardMessage(token, messageId, target) {
+  return request(`/api/messages/${messageId}/forward`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(target),
+  });
+}
+
+export function forwardGroupMessage(token, groupId, messageId, target) {
+  return request(`/api/groups/${groupId}/messages/${messageId}/forward`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(target),
+  });
+}
+
+export function pinMessage(token, messageId) {
+  return request(`/api/messages/${messageId}/pin`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+}
+export function unpinMessage(token, messageId) {
+  return request(`/api/messages/${messageId}/unpin`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+}
+export function pinGroupMessage(token, groupId, messageId) {
+  return request(`/api/groups/${groupId}/messages/${messageId}/pin`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+export function unpinGroupMessage(token, groupId, messageId) {
+  return request(`/api/groups/${groupId}/messages/${messageId}/unpin`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function starMessage(token, messageId) {
+  return request(`/api/messages/${messageId}/star`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+}
+export function starGroupMessage(token, groupId, messageId) {
+  return request(`/api/groups/${groupId}/messages/${messageId}/star`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+export function getStarredMessages(token) {
+  return request("/api/starred-messages", { headers: { Authorization: `Bearer ${token}` } });
+}

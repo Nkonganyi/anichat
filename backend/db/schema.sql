@@ -163,3 +163,19 @@ CREATE TABLE IF NOT EXISTS message_reactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_reactions_lookup ON message_reactions (message_kind, message_id);
+
+-- AniChat schema — Milestone 13 additions: forward, pin, and starred messages
+
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS forwarded_from_username VARCHAR(32);
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS forwarded_from_username VARCHAR(32);
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+
+-- Personal bookmarks — private to the user, works across any conversation.
+CREATE TABLE IF NOT EXISTS starred_messages (
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  message_kind VARCHAR(8) NOT NULL, -- 'dm' | 'group'
+  message_id   INTEGER NOT NULL,
+  starred_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, message_kind, message_id)
+);

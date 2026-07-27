@@ -1,7 +1,7 @@
 const express = require("express");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
-const { emitToUser, emitToUserWithAck } = require("../realtime");
+const { emitToUser, emitToUserWithAck, emitToGroup } = require("../realtime");
 
 const router = express.Router();
 
@@ -98,15 +98,18 @@ router.get("/with/:username", requireAuth, async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at, m.created_at,
+      `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at,
+              m.pinned_at, m.forwarded_from_username, m.created_at,
               CASE WHEN m.deleted_at IS NULL THEN m.content ELSE NULL END AS content,
               rq.id AS reply_id, rq.type AS reply_type, rq.deleted_at AS reply_deleted_at,
               CASE WHEN rq.deleted_at IS NULL THEN rq.content ELSE NULL END AS reply_content,
-              ru.username AS reply_sender_username
+              ru.username AS reply_sender_username,
+              s.user_id IS NOT NULL AS starred_by_me
        FROM messages m
        LEFT JOIN hidden_messages h ON h.message_kind = 'dm' AND h.message_id = m.id AND h.user_id = $1
        LEFT JOIN messages rq ON rq.id = m.reply_to_id
        LEFT JOIN users ru ON ru.id = rq.sender_id
+       LEFT JOIN starred_messages s ON s.message_kind = 'dm' AND s.message_id = m.id AND s.user_id = $1
        WHERE ((m.sender_id = $1 AND m.receiver_id = $2) OR (m.sender_id = $2 AND m.receiver_id = $1))
          AND h.message_id IS NULL
        ORDER BY m.created_at ASC`,
@@ -122,6 +125,9 @@ router.get("/with/:username", requireAuth, async (req, res) => {
       edited_at: row.edited_at,
       deleted_at: row.deleted_at,
       delivered_at: row.delivered_at,
+      pinned_at: row.pinned_at,
+      forwarded_from_username: row.forwarded_from_username,
+      starred_by_me: row.starred_by_me,
       created_at: row.created_at,
       replyTo: row.reply_id
         ? {
@@ -338,6 +344,157 @@ router.post("/:messageId/reactions", requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "couldn't update reaction" });
+  }
+});
+
+// Forward a message into a DM or a group. Exactly one of toUsername/toGroupId
+// must be provided. The forwarded copy is a brand-new message (so it can be
+// edited/deleted independently), carrying who it originally came from.
+router.post("/:messageId/forward", requireAuth, async (req, res) => {
+  const messageId = parseInt(req.params.messageId, 10);
+  if (Number.isNaN(messageId)) return res.status(400).json({ error: "invalid message id" });
+
+  const { toUsername, toGroupId } = req.body;
+  if (!toUsername && !toGroupId) {
+    return res.status(400).json({ error: "provide toUsername or toGroupId" });
+  }
+  if (toUsername && toGroupId) {
+    return res.status(400).json({ error: "provide only one of toUsername or toGroupId" });
+  }
+
+  try {
+    const sourceResult = await pool.query(
+      `SELECT m.*, u.username AS sender_username FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = $1`,
+      [messageId]
+    );
+    const source = sourceResult.rows[0];
+    if (!source) return res.status(404).json({ error: "message not found" });
+    if (source.deleted_at) return res.status(400).json({ error: "can't forward a deleted message" });
+
+    const isParticipant = source.sender_id === req.user.id || source.receiver_id === req.user.id;
+    if (!isParticipant) return res.status(403).json({ error: "you're not part of this conversation" });
+
+    if (toUsername) {
+      const receiverResult = await pool.query("SELECT id FROM users WHERE username = $1", [toUsername]);
+      const receiver = receiverResult.rows[0];
+      if (!receiver) return res.status(404).json({ error: `no user named '${toUsername}'` });
+      if (receiver.id === req.user.id) return res.status(400).json({ error: "you can't message yourself" });
+
+      const result = await pool.query(
+        `INSERT INTO messages (sender_id, receiver_id, content, type, forwarded_from_username)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, sender_id, receiver_id, content, type, forwarded_from_username, delivered_at, created_at`,
+        [req.user.id, receiver.id, source.content, source.type, source.sender_username]
+      );
+      const message = result.rows[0];
+      emitToUser(receiver.id, "message:new", message);
+      emitToUser(req.user.id, "message:new", message);
+      return res.status(201).json(message);
+    }
+
+    // toGroupId — verify membership before allowing the forward
+    const groupId = parseInt(toGroupId, 10);
+    const memberCheck = await pool.query("SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2", [
+      groupId,
+      req.user.id,
+    ]);
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: "you're not a member of that group" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO group_messages (group_id, sender_id, content, type, forwarded_from_username)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, sender_id, content, type, forwarded_from_username, created_at`,
+      [groupId, req.user.id, source.content, source.type, source.sender_username]
+    );
+    const message = { ...result.rows[0], sender_username: req.user.username, group_id: groupId };
+    emitToGroup(groupId, "group_message:new", message);
+    res.status(201).json(message);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't forward that message" });
+  }
+});
+
+// Pin / unpin — either DM participant can do this, it's a shared conversation
+router.post("/:messageId/pin", requireAuth, async (req, res) => {
+  const messageId = parseInt(req.params.messageId, 10);
+  if (Number.isNaN(messageId)) return res.status(400).json({ error: "invalid message id" });
+
+  try {
+    const existing = await pool.query("SELECT sender_id, receiver_id FROM messages WHERE id = $1", [messageId]);
+    const message = existing.rows[0];
+    if (!message) return res.status(404).json({ error: "message not found" });
+    const isParticipant = message.sender_id === req.user.id || message.receiver_id === req.user.id;
+    if (!isParticipant) return res.status(403).json({ error: "you're not part of this conversation" });
+
+    const result = await pool.query("UPDATE messages SET pinned_at = now() WHERE id = $1 RETURNING pinned_at", [
+      messageId,
+    ]);
+    const payload = { messageId, pinnedAt: result.rows[0].pinned_at };
+    emitToUser(message.sender_id, "message:pinned", payload);
+    emitToUser(message.receiver_id, "message:pinned", payload);
+    res.json(payload);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't pin that message" });
+  }
+});
+
+router.post("/:messageId/unpin", requireAuth, async (req, res) => {
+  const messageId = parseInt(req.params.messageId, 10);
+  if (Number.isNaN(messageId)) return res.status(400).json({ error: "invalid message id" });
+
+  try {
+    const existing = await pool.query("SELECT sender_id, receiver_id FROM messages WHERE id = $1", [messageId]);
+    const message = existing.rows[0];
+    if (!message) return res.status(404).json({ error: "message not found" });
+    const isParticipant = message.sender_id === req.user.id || message.receiver_id === req.user.id;
+    if (!isParticipant) return res.status(403).json({ error: "you're not part of this conversation" });
+
+    await pool.query("UPDATE messages SET pinned_at = NULL WHERE id = $1", [messageId]);
+    const payload = { messageId };
+    emitToUser(message.sender_id, "message:unpinned", payload);
+    emitToUser(message.receiver_id, "message:unpinned", payload);
+    res.json(payload);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't unpin that message" });
+  }
+});
+
+// Star / bookmark — toggle, private to the user
+router.post("/:messageId/star", requireAuth, async (req, res) => {
+  const messageId = parseInt(req.params.messageId, 10);
+  if (Number.isNaN(messageId)) return res.status(400).json({ error: "invalid message id" });
+
+  try {
+    const existing = await pool.query("SELECT sender_id, receiver_id FROM messages WHERE id = $1", [messageId]);
+    const message = existing.rows[0];
+    if (!message) return res.status(404).json({ error: "message not found" });
+    const isParticipant = message.sender_id === req.user.id || message.receiver_id === req.user.id;
+    if (!isParticipant) return res.status(403).json({ error: "you're not part of this conversation" });
+
+    const already = await pool.query(
+      "SELECT 1 FROM starred_messages WHERE user_id = $1 AND message_kind = 'dm' AND message_id = $2",
+      [req.user.id, messageId]
+    );
+    if (already.rows.length > 0) {
+      await pool.query("DELETE FROM starred_messages WHERE user_id = $1 AND message_kind = 'dm' AND message_id = $2", [
+        req.user.id,
+        messageId,
+      ]);
+      return res.json({ messageId, starred: false });
+    }
+    await pool.query("INSERT INTO starred_messages (user_id, message_kind, message_id) VALUES ($1, 'dm', $2)", [
+      req.user.id,
+      messageId,
+    ]);
+    res.json({ messageId, starred: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't update starred status" });
   }
 });
 

@@ -1,44 +1,52 @@
-# AniChat — Milestone 12: Reply, Reactions & Promote-to-Admin
+# AniChat — Milestone 13: Forward, Pin, Star & More
 
-Three items from the spec, all landing together since they touch the same
-message-actions menu.
+This closes out every remaining item from the "message-level features"
+section of the messaging spec. Six features, all landing together.
 
-## Reply / quote
+## Forward a message
 
-Click **⋯** → **Reply** on any message. A strip appears above the composer
-showing what you're replying to — send your message and the quote travels
-with it, shown as a small preview above your message. Works in both DMs
-and groups. If the quoted message gets deleted later, the quote preview
-gracefully shows "message was deleted" instead of breaking.
+**⋯ → Forward** on any message opens a small picker: type a username, or
+pick from your groups. The forwarded copy is a real new message (you can
+edit/delete it independently), tagged with **"↪ Forwarded from
+[original sender]"**. Works in all four directions — DM→DM, DM→group,
+group→DM, group→group.
 
-## Reactions
+## Pinned messages
 
-Click **⋯** → **React**, or tap directly on an existing reaction pill to
-toggle your own. Six reactions: 👍 ❤️ 😂 😮 😢 🙏. Clicking a reaction you've
-already left removes it — same toggle behavior as most chat apps. Updates
-live for everyone.
+**⋯ → Pin** on any message. Pinned messages show in a compact bar at the
+top of the chat, above the scrolling history — so they're always visible,
+not buried in scroll history.
+- **DMs:** either participant can pin/unpin — it's a shared conversation
+- **Groups:** admin/owner only, since it's more of a "this matters for
+  everyone" moderation signal there
 
-One thing I caught and fixed *before* shipping this: my first pass
-broadcast a single shared "did I react?" flag to everyone in a
-conversation, which is wrong — that flag means something different for
-each person looking at it. Fixed by sending the actual list of who
-reacted, and having each person's own app figure out "was I one of them?"
-for themselves.
+## Starred / saved messages
 
-## Promote / demote to admin (the real fix, not just a button)
+**⋯ → Star** bookmarks a message privately — nobody else can see what
+you've starred. There's a new **⭐ tab** showing everything you've
+starred across every DM and group at once, with a "Go to conversation"
+link that jumps you straight there.
 
-This turned out to be a bigger gap than expected. Checking the actual
-code: there was never an API endpoint to change anyone's role after a
-group was created — "admin" was a role that existed in the database but
-had no way to actually reach it. Not just a missing button; the
-capability itself didn't exist.
+## Resend on failure
 
-Now: the group owner can click the small ⬆️/⬇️ next to any member's name
-to promote them to admin or demote them back to a regular member. A
-system message announces it — in your theme's voice, same as
-kicks/adds — and the person's new permissions take effect immediately
-(a freshly-promoted admin can add/kick members right away, no
-reconnect needed).
+If sending a message fails (network hiccup, server blip), it no longer
+just vanishes with an error banner. It shows up in a small "⚠️ Failed to
+send" strip with **Retry** and **✕ discard** — so a bad connection
+doesn't cost you a message you already typed.
+
+## In-chat search
+
+Click 🔍 next to a conversation's name to filter the visible messages
+down to ones matching your search — works in both DMs and groups. This
+is a client-side filter over what's already loaded (we don't have
+message pagination yet — see the note below).
+
+## Draft persistence
+
+Type a message, switch to a different conversation (or a different tab
+entirely) without sending, come back later — your unsent text is still
+there. Saved locally per-conversation, cleared automatically once you
+actually send.
 
 ## Nothing new to set up
 
@@ -57,38 +65,53 @@ npm install
 npm run dev
 ```
 
-The migration adds a `reply_to_id` column to both message tables and a
-new `message_reactions` table. Nothing existing changes.
+The migration adds `forwarded_from_username` and `pinned_at` to both
+message tables, plus a new `starred_messages` table. Nothing existing
+changes.
 
 ## How to test it
 
-1. Reply to a message, confirm the quote preview shows correctly for both
-   people, live
-2. Delete the original message you replied to (for everyone) — confirm
-   the quote preview updates to show it was deleted, not broken text
-3. React to a message from two different accounts — confirm the count
-   goes to 2, and each account only sees *their own* reaction highlighted,
-   not both
-4. Click a reaction you already left — confirm it toggles off
-5. As a group owner, promote a member to admin — confirm the system
-   message appears, and that member can now actually kick/add people
-6. Demote them back — confirm they lose those powers immediately
-7. Try promoting as a non-owner (even an existing admin) — should be
-   blocked; only the owner can change roles
+1. Forward a message to a DM, then to a group — confirm the "Forwarded
+   from" tag appears correctly both times
+2. Pin a message in a DM as either participant — confirm it shows in the
+   bar for both people, live
+3. Try pinning in a group as a regular (non-admin) member — should be
+   blocked; try as the owner — should work
+4. Star a few messages across different conversations, check the ⭐ tab
+   shows all of them with correct context, and that "Go to conversation"
+   actually navigates there
+5. Turn off your network briefly and try sending a message — confirm you
+   get the retry strip instead of losing the text, then turn network back
+   on and hit Retry
+6. Type a search term in an active conversation — confirm the message
+   list filters down to matches
+7. Start typing a message, switch tabs without sending, come back —
+   confirm your draft is still in the box
+
+## A note on search & scale
+
+In-chat search right now works by filtering messages already loaded in
+your browser — which is completely fine at the message volumes we're at,
+but it's worth knowing this wouldn't scale gracefully to a conversation
+with tens of thousands of messages, since we load full history per
+conversation rather than paginating. Message pagination is still on the
+broader roadmap as its own item; once that lands, search would need to
+move server-side to search across everything, not just what's currently
+loaded.
 
 ## What's intentionally *not* here yet
 
-- No "jump to original message" when tapping a reply preview — it shows
-  the quote, but doesn't scroll you to it yet
-- No reaction picker beyond the fixed set of 6 — matches most chat apps'
-  "quick reactions" pattern rather than a full emoji keyboard
-- No ownership transfer — the owner role itself still can't be reassigned,
-  only admin/member
+- No forward-to-multiple-recipients-at-once — one destination per forward
+  action, same as most chat apps' basic flow
+- No "forwarded 5 times" chain tracking — each forward just remembers its
+  immediate original sender, not a full chain of hops
+- Resend-on-failure doesn't yet queue messages while fully offline and
+  auto-send when reconnected — it's a manual retry, not automatic
 
 ## If something goes wrong
 
-- **Reply preview shows "[media]"** → that's expected for replies to
-  stickers/GIFs, which don't have text content to preview
-- **Promote/demote buttons don't appear** → only the group owner sees
-  them, not other admins — that's intentional
+- **Pin/unpin button doesn't appear in a group** → only admins/owners see
+  it there, by design
+- **Starred tab is empty but you know you starred something** → check
+  you're on the right account; starring is private per-user
 - Anything else → same as always, exact error text gets you a fast fix

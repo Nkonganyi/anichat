@@ -189,6 +189,34 @@ export function AmbientMotif({ theme }) {
   );
 }
 
+export function PinnedBar({ pinnedMessages, onUnpin, canUnpin }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!pinnedMessages || pinnedMessages.length === 0) return null;
+
+  const visible = expanded ? pinnedMessages : pinnedMessages.slice(0, 1);
+
+  return (
+    <div className="pinned-bar">
+      {visible.map((m) => (
+        <div key={m.id} className="pinned-item">
+          <span className="pinned-icon">📌</span>
+          <span className="pinned-content">{m.deleted_at ? "message was deleted" : m.content || "[media]"}</span>
+          {canUnpin && (
+            <button className="pinned-unpin" onClick={() => onUnpin(m.id)}>
+              ✕
+            </button>
+          )}
+        </div>
+      ))}
+      {pinnedMessages.length > 1 && (
+        <button className="pinned-toggle" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "Show less" : `+${pinnedMessages.length - 1} more pinned`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function MessageContent({ message, mine }) {
   const replyPreview = message.replyTo && (
     <div className="reply-preview">
@@ -199,6 +227,10 @@ export function MessageContent({ message, mine }) {
     </div>
   );
 
+  const forwardedLabel = message.forwarded_from_username && (
+    <div className="forwarded-label">↪ Forwarded from {message.forwarded_from_username}</div>
+  );
+
   if (message.deleted_at) {
     return <div className={`bubble deleted ${mine ? "mine" : ""}`}>🗑️ This message was deleted</div>;
   }
@@ -207,6 +239,7 @@ export function MessageContent({ message, mine }) {
     const sticker = STICKERS.find((s) => s.id === message.content) || { glyph: "❓", label: message.content };
     return (
       <div className={`sticker-message ${mine ? "mine" : ""}`}>
+        {forwardedLabel}
         {replyPreview}
         <div className="sticker-message-glyph">{sticker.glyph}</div>
         <div className="sticker-message-label">{sticker.label}</div>
@@ -217,6 +250,7 @@ export function MessageContent({ message, mine }) {
   if (message.type === "gif") {
     return (
       <div className="gif-message">
+        {forwardedLabel}
         {replyPreview}
         <img src={message.content} alt="gif" loading="lazy" />
       </div>
@@ -225,6 +259,7 @@ export function MessageContent({ message, mine }) {
 
   return (
     <div className={`bubble ${mine ? "mine" : ""}`}>
+      {forwardedLabel}
       {replyPreview}
       {message.content}
       {message.edited_at && <span className="edited-label"> (edited)</span>}
@@ -269,8 +304,63 @@ export function ReactionPicker({ onPick, onClose }) {
   );
 }
 
-export function MessageActions({ canEdit, canDeleteEveryone, onReply, onReact, onEdit, onDeleteMe, onDeleteEveryone }) {
+export function ForwardPicker({ groups, onForwardToUser, onForwardToGroup, onClose }) {
+  const [username, setUsername] = useState("");
+
+  function handleUserSubmit(e) {
+    e.preventDefault();
+    if (username.trim()) onForwardToUser(username.trim());
+  }
+
+  return (
+    <div className="popover">
+      <div className="popover-header">
+        <span>Forward message</span>
+        <button className="popover-close" onClick={onClose}>✕</button>
+      </div>
+      <form className="forward-user-row" onSubmit={handleUserSubmit}>
+        <input placeholder="forward to username…" value={username} onChange={(e) => setUsername(e.target.value)} />
+        <button className="primary-btn small" type="submit">Send</button>
+      </form>
+      {groups?.length > 0 && (
+        <>
+          <div className="forward-divider">or forward to a group</div>
+          <div className="forward-group-list">
+            {groups.map((g) => (
+              <button key={g.id} className="forward-group-item" onClick={() => onForwardToGroup(g.id)}>
+                {g.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function MessageActions({
+  canEdit,
+  canDeleteEveryone,
+  canPin,
+  isPinned,
+  isStarred,
+  onReply,
+  onReact,
+  onForward,
+  onPin,
+  onStar,
+  onEdit,
+  onDeleteMe,
+  onDeleteEveryone,
+}) {
   const [open, setOpen] = useState(false);
+
+  function act(fn) {
+    return () => {
+      setOpen(false);
+      fn();
+    };
+  }
 
   return (
     <div className="message-actions">
@@ -279,50 +369,14 @@ export function MessageActions({ canEdit, canDeleteEveryone, onReply, onReact, o
       </button>
       {open && (
         <div className="message-actions-menu">
-          <button
-            onClick={() => {
-              setOpen(false);
-              onReact();
-            }}
-          >
-            😊 React
-          </button>
-          <button
-            onClick={() => {
-              setOpen(false);
-              onReply();
-            }}
-          >
-            ↩️ Reply
-          </button>
-          {canEdit && (
-            <button
-              onClick={() => {
-                setOpen(false);
-                onEdit();
-              }}
-            >
-              ✏️ Edit
-            </button>
-          )}
-          <button
-            onClick={() => {
-              setOpen(false);
-              onDeleteMe();
-            }}
-          >
-            🙈 Delete for me
-          </button>
-          {canDeleteEveryone && (
-            <button
-              onClick={() => {
-                setOpen(false);
-                onDeleteEveryone();
-              }}
-            >
-              🗑️ Delete for everyone
-            </button>
-          )}
+          <button onClick={act(onReact)}>😊 React</button>
+          <button onClick={act(onReply)}>↩️ Reply</button>
+          <button onClick={act(onForward)}>➡️ Forward</button>
+          <button onClick={act(onStar)}>{isStarred ? "⭐ Unstar" : "☆ Star"}</button>
+          {canPin && <button onClick={act(onPin)}>{isPinned ? "📌 Unpin" : "📌 Pin"}</button>}
+          {canEdit && <button onClick={act(onEdit)}>✏️ Edit</button>}
+          <button onClick={act(onDeleteMe)}>🙈 Delete for me</button>
+          {canDeleteEveryone && <button onClick={act(onDeleteEveryone)}>🗑️ Delete for everyone</button>}
         </div>
       )}
     </div>
