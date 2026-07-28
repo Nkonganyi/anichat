@@ -179,3 +179,8 @@ CREATE TABLE IF NOT EXISTS starred_messages (
   starred_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, message_kind, message_id)
 );
+
+-- AniChat schema — Milestone 14: voice messages
+-- content stores the relative /uploads path, same pattern as other media message types.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS voice_duration_seconds INTEGER;
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS voice_duration_seconds INTEGER;

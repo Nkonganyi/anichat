@@ -1,7 +1,72 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { AVATAR_OPTIONS, STICKERS, QUICK_EMOJI } from "./constants";
 import { THEME_OPTIONS } from "./themes";
-import { searchGifs } from "./api";
+import { searchGifs, BACKEND_URL } from "./api";
+
+function formatDuration(totalSeconds) {
+  const secs = Math.max(0, Math.round(totalSeconds || 0));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+export function VoiceMessagePlayer({ src, durationSeconds, mine }) {
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [knownDuration, setKnownDuration] = useState(durationSeconds || 0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => setCurrentTime(audio.currentTime);
+    const onEnded = () => {
+      setPlaying(false);
+      setCurrentTime(0);
+    };
+    const onLoaded = () => {
+      if (audio.duration && Number.isFinite(audio.duration)) setKnownDuration(audio.duration);
+    };
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("loadedmetadata", onLoaded);
+    };
+  }, []);
+
+  function togglePlay() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+      setPlaying(false);
+    } else {
+      audio.play().catch(() => {});
+      setPlaying(true);
+    }
+  }
+
+  const progress = knownDuration > 0 ? Math.min(1, currentTime / knownDuration) : 0;
+  const barCount = 18;
+
+  return (
+    <div className={`voice-message ${mine ? "mine" : ""}`}>
+      <audio ref={audioRef} src={src} preload="metadata" style={{ display: "none" }} />
+      <button className="voice-play-btn" onClick={togglePlay}>
+        {playing ? "⏸" : "▶"}
+      </button>
+      <div className="voice-waveform">
+        {[...Array(barCount)].map((_, i) => (
+          <span key={i} className={i / barCount < progress ? "played" : ""} style={{ height: `${20 + ((i * 37) % 60)}%` }} />
+        ))}
+      </div>
+      <span className="voice-duration">{formatDuration(playing || currentTime > 0 ? currentTime : knownDuration)}</span>
+    </div>
+  );
+}
 
 export function AvatarBadge({ avatar, size = 28 }) {
   return (
@@ -253,6 +318,20 @@ export function MessageContent({ message, mine }) {
         {forwardedLabel}
         {replyPreview}
         <img src={message.content} alt="gif" loading="lazy" />
+      </div>
+    );
+  }
+
+  if (message.type === "voice") {
+    return (
+      <div>
+        {forwardedLabel}
+        {replyPreview}
+        <VoiceMessagePlayer
+          src={`${BACKEND_URL}/uploads/${message.content}`}
+          durationSeconds={message.voice_duration_seconds}
+          mine={mine}
+        />
       </div>
     );
   }

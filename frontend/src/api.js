@@ -349,3 +349,36 @@ export function starGroupMessage(token, groupId, messageId) {
 export function getStarredMessages(token) {
   return request("/api/starred-messages", { headers: { Authorization: `Bearer ${token}` } });
 }
+
+export async function sendVoiceMessage(token, toUsername, blob, durationSeconds, replyToId) {
+  const formData = new FormData();
+  formData.append("file", blob, "voice.webm");
+  formData.append("to", toUsername);
+  formData.append("durationSeconds", String(durationSeconds));
+  if (replyToId) formData.append("replyToId", String(replyToId));
+
+  const res = await fetch(`${BACKEND_URL}/api/messages/voice`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't send voice message");
+  return data;
+}
+
+export async function sendGroupVoiceMessage(token, groupId, blob, durationSeconds, replyToId) {
+  const formData = new FormData();
+  formData.append("file", blob, "voice.webm");
+  formData.append("durationSeconds", String(durationSeconds));
+  if (replyToId) formData.append("replyToId", String(replyToId));
+
+  const res = await fetch(`${BACKEND_URL}/api/groups/${groupId}/messages/voice`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't send voice message");
+  return data;
+}

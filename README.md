@@ -1,52 +1,26 @@
-# AniChat — Milestone 13: Forward, Pin, Star & More
+# AniChat — Milestone 14: Voice Messages
 
-This closes out every remaining item from the "message-level features"
-section of the messaging spec. Six features, all landing together.
+First item from the "Voice & rich media" section of the spec, built and
+tested on its own as requested.
 
-## Forward a message
+## What's new
 
-**⋯ → Forward** on any message opens a small picker: type a username, or
-pick from your groups. The forwarded copy is a real new message (you can
-edit/delete it independently), tagged with **"↪ Forwarded from
-[original sender]"**. Works in all four directions — DM→DM, DM→group,
-group→DM, group→group.
+Click the 🎤 button in any DM or group composer. It starts recording
+immediately (your browser will ask for microphone permission the first
+time) — you'll see a pulsing red dot and a live timer. Hit **Send** to
+finish and send it, or **Cancel** to throw it away. Recordings auto-stop
+at 3 minutes as a sane ceiling.
 
-## Pinned messages
+Recorded messages show up as a proper voice player bubble — play/pause
+button, a decorative waveform, and the duration — not just a raw file
+link. Works identically for both the sender and recipient's playback.
 
-**⋯ → Pin** on any message. Pinned messages show in a compact bar at the
-top of the chat, above the scrolling history — so they're always visible,
-not buried in scroll history.
-- **DMs:** either participant can pin/unpin — it's a shared conversation
-- **Groups:** admin/owner only, since it's more of a "this matters for
-  everyone" moderation signal there
-
-## Starred / saved messages
-
-**⋯ → Star** bookmarks a message privately — nobody else can see what
-you've starred. There's a new **⭐ tab** showing everything you've
-starred across every DM and group at once, with a "Go to conversation"
-link that jumps you straight there.
-
-## Resend on failure
-
-If sending a message fails (network hiccup, server blip), it no longer
-just vanishes with an error banner. It shows up in a small "⚠️ Failed to
-send" strip with **Retry** and **✕ discard** — so a bad connection
-doesn't cost you a message you already typed.
-
-## In-chat search
-
-Click 🔍 next to a conversation's name to filter the visible messages
-down to ones matching your search — works in both DMs and groups. This
-is a client-side filter over what's already loaded (we don't have
-message pagination yet — see the note below).
-
-## Draft persistence
-
-Type a message, switch to a different conversation (or a different tab
-entirely) without sending, come back later — your unsent text is still
-there. Saved locally per-conversation, cleared automatically once you
-actually send.
+Because voice messages are just another message type under the hood, they
+automatically got everything already built for other messages, with zero
+extra work: reactions, replies, delivery ticks, read receipts, pin, star,
+forward, delete. I specifically tested that reactions work on a voice
+message to confirm this "generic system" assumption actually held up in
+practice, not just in theory.
 
 ## Nothing new to set up
 
@@ -65,53 +39,55 @@ npm install
 npm run dev
 ```
 
-The migration adds `forwarded_from_username` and `pinned_at` to both
-message tables, plus a new `starred_messages` table. Nothing existing
-changes.
+The migration adds one column (`voice_duration_seconds`) to both message
+tables. Nothing existing changes.
 
-## How to test it
+## How I tested the backend (no browser available on my end)
 
-1. Forward a message to a DM, then to a group — confirm the "Forwarded
-   from" tag appears correctly both times
-2. Pin a message in a DM as either participant — confirm it shows in the
-   bar for both people, live
-3. Try pinning in a group as a regular (non-admin) member — should be
-   blocked; try as the owner — should work
-4. Star a few messages across different conversations, check the ⭐ tab
-   shows all of them with correct context, and that "Go to conversation"
-   actually navigates there
-5. Turn off your network briefly and try sending a message — confirm you
-   get the retry strip instead of losing the text, then turn network back
-   on and hit Retry
-6. Type a search term in an active conversation — confirm the message
-   list filters down to matches
-7. Start typing a message, switch tabs without sending, come back —
-   confirm your draft is still in the box
+I couldn't record real audio through an actual microphone from my
+sandbox, obviously — but I could and did generate real, valid Opus audio
+files with ffmpeg and upload them through the exact same code path a
+browser would use (`FormData` + `fetch`, not a fake shortcut). Then I
+downloaded the file back through the server and verified with `ffprobe`
+that what came back is genuinely valid, correctly-timed audio — not just
+bytes that happened to save. I also confirmed: non-audio files get
+rejected, oversized files get rejected (8MB cap), voice messages can be
+replies, and non-members can't send voice messages into a group they're
+not in.
 
-## A note on search & scale
+**What I couldn't test myself:** the actual in-browser recording
+experience — permission prompts, what your specific browser's
+MediaRecorder produces, whether playback feels smooth. That's the part
+that needs your real test.
 
-In-chat search right now works by filtering messages already loaded in
-your browser — which is completely fine at the message volumes we're at,
-but it's worth knowing this wouldn't scale gracefully to a conversation
-with tens of thousands of messages, since we load full history per
-conversation rather than paginating. Message pagination is still on the
-broader roadmap as its own item; once that lands, search would need to
-move server-side to search across everything, not just what's currently
-loaded.
+## How to test it yourself
+
+1. Click 🎤 in a DM, say something, hit Send
+2. Confirm it appears as a playable voice bubble for you, and — open a
+   second window — for the other person too, live
+3. Play it back — confirms the waveform progress and duration display
+   update as it plays
+4. Try Cancel mid-recording — confirms nothing gets sent
+5. Try reacting to a voice message, or replying to one — confirms those
+   generic features really do "just work"
+6. Try it in a group too
 
 ## What's intentionally *not* here yet
 
-- No forward-to-multiple-recipients-at-once — one destination per forward
-  action, same as most chat apps' basic flow
-- No "forwarded 5 times" chain tracking — each forward just remembers its
-  immediate original sender, not a full chain of hops
-- Resend-on-failure doesn't yet queue messages while fully offline and
-  auto-send when reconnected — it's a manual retry, not automatic
+- No hold-to-record (press and hold a button, release to send) — this is
+  tap-to-start, tap-to-send, which is more reliable across mouse vs.
+  touch input and doesn't risk losing a recording if your finger slips
+- Waveform is decorative/stylized, not a literal amplitude visualization
+  of the actual audio — matches what most chat apps actually do, real
+  waveform analysis is a lot of extra complexity for limited payoff
+- No transcription
 
 ## If something goes wrong
 
-- **Pin/unpin button doesn't appear in a group** → only admins/owners see
-  it there, by design
-- **Starred tab is empty but you know you starred something** → check
-  you're on the right account; starring is private per-user
-- Anything else → same as always, exact error text gets you a fast fix
+- **🎤 button does nothing, or shows a permission error** → check your
+  browser's microphone permission for this site (usually a padlock/icon
+  in the address bar)
+- **Recording works but sending fails** → check the backend terminal for
+  the exact error
+- Anything else → same as always, exact error text (or what you see/hear)
+  gets you a fast fix

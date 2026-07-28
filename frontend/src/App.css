@@ -1432,3 +1432,119 @@ input:focus {
 .starred-item-content {
   color: var(--text);
 }
+
+/* ---- voice recording ---- */
+.toolbar-btn.recording {
+  border-color: var(--offline);
+  color: var(--offline);
+}
+
+.recording-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--offline);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.recording-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--offline);
+  animation: recording-pulse 1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.recording-timer {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-hint {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+}
+
+/* ---- voice message player ---- */
+.voice-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-light);
+  border-radius: 14px 14px 14px 4px;
+  padding: 8px 12px;
+  min-width: 180px;
+}
+
+.voice-message.mine {
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-radius: 14px 14px 4px 14px;
+}
+
+.voice-play-btn {
+  background: color-mix(in srgb, var(--bg-2) 40%, transparent);
+  border: none;
+  color: var(--text);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 11px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-message.mine .voice-play-btn {
+  background: rgba(255, 255, 255, 0.25);
+  color: var(--bg-2);
+}
+
+.voice-waveform {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  height: 20px;
+}
+
+.voice-waveform span {
+  width: 2.5px;
+  background: var(--muted);
+  border-radius: 2px;
+  min-height: 15%;
+}
+
+.voice-waveform span.played {
+  background: var(--accent);
+}
+
+.voice-message.mine .voice-waveform span {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.voice-message.mine .voice-waveform span.played {
+  background: var(--bg-2);
+}
+
+.voice-duration {
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.voice-message.mine .voice-duration {
+  color: rgba(255, 255, 255, 0.85);
+}

@@ -37,8 +37,11 @@ import {
   starMessage,
   starGroupMessage,
   getStarredMessages,
+  sendVoiceMessage,
+  sendGroupVoiceMessage,
   BACKEND_URL,
 } from "./api";
+import { useVoiceRecorder } from "./voiceRecorder";
 import { ListenTogether } from "./listenTogether";
 import { InboxPanel } from "./inbox";
 import { getVoice, renderSystemMessage } from "./voices";
@@ -99,7 +102,7 @@ function AuthScreen({ onAuthed }) {
   return (
     <div className="auth-card">
       <h1>AniChat 🌸</h1>
-      <p className="subtitle">Milestone 13 — Forward, Pin, Star &amp; More</p>
+      <p className="subtitle">Milestone 14 — Voice Messages</p>
 
       <div className="tab-row">
         <button className={mode === "login" ? "tab active" : "tab"} onClick={() => setMode("login")}>
@@ -155,6 +158,7 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
   const typingTimeoutRef = useRef(null);
   const lastTypingEmitRef = useRef(0);
   const otherTypingTimeoutRef = useRef(null);
+  const voiceRecorder = useVoiceRecorder();
 
   async function loadConversation(withUsername) {
     try {
@@ -351,6 +355,17 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
 
   function handleDiscardFailed(tempId) {
     setFailedMessages((prev) => prev.filter((f) => f.tempId !== tempId));
+  }
+
+  async function handleSendVoice() {
+    const result = await voiceRecorder.stopRecording();
+    if (!result || !activeChat) return;
+    try {
+      await sendVoiceMessage(token, activeChat.username, result.blob, result.duration, replyTarget?.id || null);
+      setReplyTarget(null);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function handleReact(messageId, emoji) {
@@ -561,7 +576,17 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
             <button type="button" className="toolbar-btn" onClick={() => setOpenPicker(openPicker === "gif" ? null : "gif")}>
               GIF
             </button>
+            <button
+              type="button"
+              className={`toolbar-btn ${voiceRecorder.isRecording ? "recording" : ""}`}
+              onClick={voiceRecorder.isRecording ? undefined : voiceRecorder.startRecording}
+              disabled={voiceRecorder.isRecording}
+            >
+              🎤
+            </button>
           </div>
+
+          {voiceRecorder.error && <p className="error-text small-text">{voiceRecorder.error}</p>}
 
           {openPicker === "sticker" && <StickerPicker onPick={(id) => send(id, "sticker")} onClose={() => setOpenPicker(null)} />}
           {openPicker === "emoji" && (
@@ -571,16 +596,32 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
             <GifPicker token={token} onPick={(url) => send(url, "gif")} onClose={() => setOpenPicker(null)} />
           )}
 
-          <form className="send-row" onSubmit={handleSend}>
-            <input
-              placeholder={`Message ${activeChat.username}…`}
-              value={draft}
-              onChange={handleDraftChange}
-            />
-            <button className="primary-btn small" type="submit">
-              Send
-            </button>
-          </form>
+          {voiceRecorder.isRecording ? (
+            <div className="recording-bar">
+              <span className="recording-dot" />
+              <span className="recording-timer">
+                {Math.floor(voiceRecorder.elapsedSeconds / 60)}:{(voiceRecorder.elapsedSeconds % 60).toString().padStart(2, "0")}
+              </span>
+              <span className="recording-hint">Recording…</span>
+              <button type="button" className="link-btn" onClick={voiceRecorder.cancelRecording}>
+                Cancel
+              </button>
+              <button type="button" className="primary-btn small" onClick={handleSendVoice}>
+                Send
+              </button>
+            </div>
+          ) : (
+            <form className="send-row" onSubmit={handleSend}>
+              <input
+                placeholder={`Message ${activeChat.username}…`}
+                value={draft}
+                onChange={handleDraftChange}
+              />
+              <button className="primary-btn small" type="submit">
+                Send
+              </button>
+            </form>
+          )}
         </>
       )}
     </>
@@ -610,6 +651,7 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
   const typingTimeoutRef = useRef(null);
   const lastTypingEmitRef = useRef(0);
   const typingClearTimersRef = useRef({});
+  const voiceRecorder = useVoiceRecorder();
 
   async function refreshGroupList() {
     try {
@@ -733,6 +775,17 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
 
   function handleDiscardFailed(tempId) {
     setFailedMessages((prev) => prev.filter((f) => f.tempId !== tempId));
+  }
+
+  async function handleSendVoice() {
+    const result = await voiceRecorder.stopRecording();
+    if (!result || !activeGroup) return;
+    try {
+      await sendGroupVoiceMessage(token, activeGroup.group.id, result.blob, result.duration, replyTarget?.id || null);
+      setReplyTarget(null);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function handleReact(messageId, emoji) {
@@ -1176,7 +1229,17 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
               <button type="button" className="toolbar-btn" onClick={() => setOpenPicker(openPicker === "gif" ? null : "gif")}>
                 GIF
               </button>
+              <button
+                type="button"
+                className={`toolbar-btn ${voiceRecorder.isRecording ? "recording" : ""}`}
+                onClick={voiceRecorder.isRecording ? undefined : voiceRecorder.startRecording}
+                disabled={voiceRecorder.isRecording}
+              >
+                🎤
+              </button>
             </div>
+
+            {voiceRecorder.error && <p className="error-text small-text">{voiceRecorder.error}</p>}
 
             {openPicker === "sticker" && <StickerPicker onPick={(id) => send(id, "sticker")} onClose={() => setOpenPicker(null)} />}
             {openPicker === "emoji" && (
@@ -1186,16 +1249,32 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
               <GifPicker token={token} onPick={(url) => send(url, "gif")} onClose={() => setOpenPicker(null)} />
             )}
 
-            <form className="send-row" onSubmit={handleSend}>
-              <input
-                placeholder={`Message ${activeGroup.group.name}…`}
-                value={draft}
-                onChange={handleDraftChange}
-              />
-              <button className="primary-btn small" type="submit">
-                Send
-              </button>
-            </form>
+            {voiceRecorder.isRecording ? (
+              <div className="recording-bar">
+                <span className="recording-dot" />
+                <span className="recording-timer">
+                  {Math.floor(voiceRecorder.elapsedSeconds / 60)}:{(voiceRecorder.elapsedSeconds % 60).toString().padStart(2, "0")}
+                </span>
+                <span className="recording-hint">Recording…</span>
+                <button type="button" className="link-btn" onClick={voiceRecorder.cancelRecording}>
+                  Cancel
+                </button>
+                <button type="button" className="primary-btn small" onClick={handleSendVoice}>
+                  Send
+                </button>
+              </div>
+            ) : (
+              <form className="send-row" onSubmit={handleSend}>
+                <input
+                  placeholder={`Message ${activeGroup.group.name}…`}
+                  value={draft}
+                  onChange={handleDraftChange}
+                />
+                <button className="primary-btn small" type="submit">
+                  Send
+                </button>
+              </form>
+            )}
           </>
         ) : (
           <p className="muted center">Select a group, or create one to get started.</p>

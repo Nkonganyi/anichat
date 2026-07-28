@@ -1,11 +1,36 @@
 const express = require("express");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { emitToUser, emitToUserWithAck, emitToGroup } = require("../realtime");
 
 const router = express.Router();
 
-const VALID_TYPES = ["text", "sticker", "gif"];
+const VALID_TYPES = ["text", "sticker", "gif", "voice"];
+
+const VOICE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "voice-notes");
+fs.mkdirSync(VOICE_UPLOAD_DIR, { recursive: true });
+const MAX_VOICE_SIZE = 8 * 1024 * 1024; // short voice notes, not full audio files
+
+const voiceStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, VOICE_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".webm";
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+
+function voiceFileFilter(req, file, cb) {
+  if (!file.mimetype.startsWith("audio/")) {
+    return cb(new Error("only audio recordings are allowed"));
+  }
+  cb(null, true);
+}
+
+const uploadVoice = multer({ storage: voiceStorage, fileFilter: voiceFileFilter, limits: { fileSize: MAX_VOICE_SIZE } });
 
 // Send a message to another user (by username)
 router.post("/", requireAuth, async (req, res) => {
@@ -86,6 +111,76 @@ router.post("/", requireAuth, async (req, res) => {
   }
 });
 
+// Send a voice message — multipart upload, field name "file", plus "to",
+// optional "replyToId", and "durationSeconds" (measured client-side while recording).
+router.post("/voice", requireAuth, (req, res) => {
+  uploadVoice.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "voice message is too large — max 8MB (keep it under ~3 minutes)" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "an audio recording is required (field name: 'file')" });
+
+    const { to, replyToId } = req.body;
+    const durationSeconds = parseInt(req.body.durationSeconds, 10) || null;
+
+    if (!to) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: "'to' is required" });
+    }
+
+    try {
+      const receiverResult = await pool.query("SELECT id FROM users WHERE username = $1", [to]);
+      const receiver = receiverResult.rows[0];
+      if (!receiver) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(404).json({ error: `no user named '${to}'` });
+      }
+      if (receiver.id === req.user.id) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "you can't message yourself" });
+      }
+
+      let validReplyToId = null;
+      if (replyToId) {
+        const rq = await pool.query(
+          "SELECT id FROM messages WHERE id = $1 AND ((sender_id = $2 AND receiver_id = $3) OR (sender_id = $3 AND receiver_id = $2))",
+          [replyToId, req.user.id, receiver.id]
+        );
+        if (rq.rows.length > 0) validReplyToId = replyToId;
+      }
+
+      const relativePath = `voice-notes/${req.file.filename}`;
+      const result = await pool.query(
+        `INSERT INTO messages (sender_id, receiver_id, content, type, reply_to_id, voice_duration_seconds)
+         VALUES ($1, $2, $3, 'voice', $4, $5)
+         RETURNING id, sender_id, receiver_id, content, type, reply_to_id, voice_duration_seconds, delivered_at, created_at`,
+        [req.user.id, receiver.id, relativePath, validReplyToId, durationSeconds]
+      );
+
+      const message = result.rows[0];
+      emitToUser(receiver.id, "message:new", message);
+      emitToUser(req.user.id, "message:new", message);
+      res.status(201).json(message);
+
+      emitToUserWithAck(receiver.id, "message:new", message)
+        .then(async (delivered) => {
+          if (!delivered) return;
+          const updateResult = await pool.query(
+            "UPDATE messages SET delivered_at = now() WHERE id = $1 RETURNING delivered_at",
+            [message.id]
+          );
+          emitToUser(req.user.id, "message:delivered", { messageId: message.id, deliveredAt: updateResult.rows[0].delivered_at });
+        })
+        .catch((e) => console.error("delivery ack failed:", e.message));
+    } catch (dbErr) {
+      console.error(dbErr);
+      fs.unlink(req.file.path, () => {});
+      res.status(500).json({ error: "couldn't send voice message" });
+    }
+  });
+});
+
 // Get the full conversation between the logged-in user and :username
 router.get("/with/:username", requireAuth, async (req, res) => {
   try {
@@ -99,7 +194,7 @@ router.get("/with/:username", requireAuth, async (req, res) => {
 
     const result = await pool.query(
       `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at,
-              m.pinned_at, m.forwarded_from_username, m.created_at,
+              m.pinned_at, m.forwarded_from_username, m.voice_duration_seconds, m.created_at,
               CASE WHEN m.deleted_at IS NULL THEN m.content ELSE NULL END AS content,
               rq.id AS reply_id, rq.type AS reply_type, rq.deleted_at AS reply_deleted_at,
               CASE WHEN rq.deleted_at IS NULL THEN rq.content ELSE NULL END AS reply_content,
@@ -127,6 +222,7 @@ router.get("/with/:username", requireAuth, async (req, res) => {
       delivered_at: row.delivered_at,
       pinned_at: row.pinned_at,
       forwarded_from_username: row.forwarded_from_username,
+      voice_duration_seconds: row.voice_duration_seconds,
       starred_by_me: row.starred_by_me,
       created_at: row.created_at,
       replyTo: row.reply_id

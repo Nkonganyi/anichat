@@ -1,10 +1,35 @@
 const express = require("express");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { requireMembership, requireAdmin } = require("../middleware/groupAuth");
 const { emitToGroup, emitToUser, joinUserToGroupRoom, removeUserFromGroupRoom } = require("../realtime");
 
 const router = express.Router();
+
+const VOICE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "voice-notes");
+fs.mkdirSync(VOICE_UPLOAD_DIR, { recursive: true });
+const MAX_VOICE_SIZE = 8 * 1024 * 1024;
+
+const voiceStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, VOICE_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".webm";
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+
+function voiceFileFilter(req, file, cb) {
+  if (!file.mimetype.startsWith("audio/")) {
+    return cb(new Error("only audio recordings are allowed"));
+  }
+  cb(null, true);
+}
+
+const uploadVoice = multer({ storage: voiceStorage, fileFilter: voiceFileFilter, limits: { fileSize: MAX_VOICE_SIZE } });
 
 // Create a group — creator automatically becomes owner
 router.post("/", requireAuth, async (req, res) => {
@@ -71,7 +96,8 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
 
     const messagesResult = await pool.query(
       `SELECT gmsg.id, gmsg.sender_id, u.username AS sender_username, gmsg.type, gmsg.meta,
-              gmsg.edited_at, gmsg.deleted_at, gmsg.pinned_at, gmsg.forwarded_from_username, gmsg.created_at,
+              gmsg.edited_at, gmsg.deleted_at, gmsg.pinned_at, gmsg.forwarded_from_username,
+              gmsg.voice_duration_seconds, gmsg.created_at,
               CASE WHEN gmsg.deleted_at IS NULL THEN gmsg.content ELSE NULL END AS content,
               rq.id AS reply_id, rq.type AS reply_type, rq.deleted_at AS reply_deleted_at,
               CASE WHEN rq.deleted_at IS NULL THEN rq.content ELSE NULL END AS reply_content,
@@ -99,6 +125,7 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
       deleted_at: row.deleted_at,
       pinned_at: row.pinned_at,
       forwarded_from_username: row.forwarded_from_username,
+      voice_duration_seconds: row.voice_duration_seconds,
       starred_by_me: row.starred_by_me,
       created_at: row.created_at,
       replyTo: row.reply_id
@@ -144,7 +171,7 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
   }
 });
 
-const VALID_MSG_TYPES = ["text", "sticker", "gif"];
+const VALID_MSG_TYPES = ["text", "sticker", "gif", "voice"];
 const ALLOWED_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
 // Send a message to the group — any member can do this
@@ -191,6 +218,46 @@ router.post("/:groupId/messages", requireAuth, requireMembership, async (req, re
     console.error(err);
     res.status(500).json({ error: "couldn't send that message" });
   }
+});
+
+// Send a voice message to the group — multipart upload
+router.post("/:groupId/messages/voice", requireAuth, requireMembership, (req, res) => {
+  uploadVoice.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "voice message is too large — max 8MB (keep it under ~3 minutes)" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "an audio recording is required (field name: 'file')" });
+
+    const durationSeconds = parseInt(req.body.durationSeconds, 10) || null;
+    const { replyToId } = req.body;
+
+    try {
+      let validReplyToId = null;
+      if (replyToId) {
+        const rq = await pool.query("SELECT id FROM group_messages WHERE id = $1 AND group_id = $2", [
+          replyToId,
+          req.groupId,
+        ]);
+        if (rq.rows.length > 0) validReplyToId = replyToId;
+      }
+
+      const relativePath = `voice-notes/${req.file.filename}`;
+      const result = await pool.query(
+        `INSERT INTO group_messages (group_id, sender_id, type, content, reply_to_id, voice_duration_seconds)
+         VALUES ($1, $2, 'voice', $3, $4, $5)
+         RETURNING id, sender_id, type, content, reply_to_id, voice_duration_seconds, created_at`,
+        [req.groupId, req.user.id, relativePath, validReplyToId, durationSeconds]
+      );
+      const message = { ...result.rows[0], sender_username: req.user.username, group_id: req.groupId };
+      emitToGroup(req.groupId, "group_message:new", message);
+      res.status(201).json(message);
+    } catch (dbErr) {
+      console.error(dbErr);
+      fs.unlink(req.file.path, () => {});
+      res.status(500).json({ error: "couldn't send voice message" });
+    }
+  });
 });
 
 // Edit a group message — sender only, text messages only
