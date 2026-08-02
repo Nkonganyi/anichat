@@ -7,6 +7,7 @@ const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { requireMembership, requireAdmin } = require("../middleware/groupAuth");
 const { emitToGroup, emitToUser, joinUserToGroupRoom, removeUserFromGroupRoom } = require("../realtime");
+const { resolveMediaFields } = require("../lib/mediaProcessing");
 
 const router = express.Router();
 
@@ -30,6 +31,62 @@ function voiceFileFilter(req, file, cb) {
 }
 
 const uploadVoice = multer({ storage: voiceStorage, fileFilter: voiceFileFilter, limits: { fileSize: MAX_VOICE_SIZE } });
+
+const VIDEO_NOTE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "video-notes");
+fs.mkdirSync(VIDEO_NOTE_UPLOAD_DIR, { recursive: true });
+const MAX_VIDEO_NOTE_SIZE = 20 * 1024 * 1024;
+
+const videoNoteStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, VIDEO_NOTE_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".webm";
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+
+function videoNoteFileFilter(req, file, cb) {
+  console.log(`[video-note upload] originalname=${file.originalname} mimetype=${file.mimetype}`);
+  if (!file.mimetype.startsWith("video/")) {
+    return cb(new Error(`only video recordings are allowed (got mimetype: "${file.mimetype}")`));
+  }
+  cb(null, true);
+}
+
+const uploadVideoNote = multer({
+  storage: videoNoteStorage,
+  fileFilter: videoNoteFileFilter,
+  limits: { fileSize: MAX_VIDEO_NOTE_SIZE },
+});
+
+const FILE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "files");
+fs.mkdirSync(FILE_UPLOAD_DIR, { recursive: true });
+const MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+const BLOCKED_FILE_EXTENSIONS = new Set([
+  ".exe", ".msi", ".bat", ".cmd", ".sh", ".scr", ".com", ".jar", ".app", ".dll", ".ps1", ".vbs",
+]);
+
+const fileStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, FILE_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || "";
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+
+function genericFileFilter(req, file, cb) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (BLOCKED_FILE_EXTENSIONS.has(ext)) {
+    return cb(new Error(`files of type "${ext}" can't be shared`));
+  }
+  cb(null, true);
+}
+
+const uploadFile = multer({
+  storage: fileStorage,
+  fileFilter: genericFileFilter,
+  limits: { fileSize: MAX_FILE_SIZE },
+});
 
 // Create a group — creator automatically becomes owner
 router.post("/", requireAuth, async (req, res) => {
@@ -97,7 +154,8 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
     const messagesResult = await pool.query(
       `SELECT gmsg.id, gmsg.sender_id, u.username AS sender_username, gmsg.type, gmsg.meta,
               gmsg.edited_at, gmsg.deleted_at, gmsg.pinned_at, gmsg.forwarded_from_username,
-              gmsg.voice_duration_seconds, gmsg.created_at,
+              gmsg.voice_duration_seconds, gmsg.video_duration_seconds,
+              gmsg.file_name, gmsg.file_size_bytes, gmsg.thumbnail_path, gmsg.created_at,
               CASE WHEN gmsg.deleted_at IS NULL THEN gmsg.content ELSE NULL END AS content,
               rq.id AS reply_id, rq.type AS reply_type, rq.deleted_at AS reply_deleted_at,
               CASE WHEN rq.deleted_at IS NULL THEN rq.content ELSE NULL END AS reply_content,
@@ -126,6 +184,10 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
       pinned_at: row.pinned_at,
       forwarded_from_username: row.forwarded_from_username,
       voice_duration_seconds: row.voice_duration_seconds,
+      video_duration_seconds: row.video_duration_seconds,
+      file_name: row.file_name,
+      file_size_bytes: row.file_size_bytes,
+      thumbnail_path: row.thumbnail_path,
       starred_by_me: row.starred_by_me,
       created_at: row.created_at,
       replyTo: row.reply_id
@@ -171,7 +233,7 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
   }
 });
 
-const VALID_MSG_TYPES = ["text", "sticker", "gif", "voice"];
+const VALID_MSG_TYPES = ["text", "sticker", "gif", "voice", "video_note", "file", "image", "video"];
 const ALLOWED_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
 // Send a message to the group — any member can do this
@@ -256,6 +318,96 @@ router.post("/:groupId/messages/voice", requireAuth, requireMembership, (req, re
       console.error(dbErr);
       fs.unlink(req.file.path, () => {});
       res.status(500).json({ error: "couldn't send voice message" });
+    }
+  });
+});
+
+// Send a video note to the group — short circular video message
+router.post("/:groupId/messages/video-note", requireAuth, requireMembership, (req, res) => {
+  uploadVideoNote.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "video note is too large — max 20MB (keep it under ~60 seconds)" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "a video recording is required (field name: 'file')" });
+
+    const durationSeconds = parseInt(req.body.durationSeconds, 10) || null;
+    const { replyToId } = req.body;
+
+    try {
+      let validReplyToId = null;
+      if (replyToId) {
+        const rq = await pool.query("SELECT id FROM group_messages WHERE id = $1 AND group_id = $2", [
+          replyToId,
+          req.groupId,
+        ]);
+        if (rq.rows.length > 0) validReplyToId = replyToId;
+      }
+
+      const relativePath = `video-notes/${req.file.filename}`;
+      const result = await pool.query(
+        `INSERT INTO group_messages (group_id, sender_id, type, content, reply_to_id, video_duration_seconds)
+         VALUES ($1, $2, 'video_note', $3, $4, $5)
+         RETURNING id, sender_id, type, content, reply_to_id, video_duration_seconds, created_at`,
+        [req.groupId, req.user.id, relativePath, validReplyToId, durationSeconds]
+      );
+      const message = { ...result.rows[0], sender_username: req.user.username, group_id: req.groupId };
+      emitToGroup(req.groupId, "group_message:new", message);
+      res.status(201).json(message);
+    } catch (dbErr) {
+      console.error(dbErr);
+      fs.unlink(req.file.path, () => {});
+      res.status(500).json({ error: "couldn't send video note" });
+    }
+  });
+});
+
+// Send a document/file to the group — multipart upload, field name "file"
+router.post("/:groupId/messages/file", requireAuth, requireMembership, (req, res) => {
+  uploadFile.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "file is too large — max 25MB" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "a file is required (field name: 'file')" });
+
+    const { replyToId } = req.body;
+
+    try {
+      let validReplyToId = null;
+      if (replyToId) {
+        const rq = await pool.query("SELECT id FROM group_messages WHERE id = $1 AND group_id = $2", [
+          replyToId,
+          req.groupId,
+        ]);
+        if (rq.rows.length > 0) validReplyToId = replyToId;
+      }
+
+      const media = await resolveMediaFields(req.file);
+
+      const result = await pool.query(
+        `INSERT INTO group_messages (group_id, sender_id, type, content, reply_to_id, file_name, file_size_bytes, thumbnail_path, video_duration_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, sender_id, type, content, reply_to_id, file_name, file_size_bytes, thumbnail_path, video_duration_seconds, created_at`,
+        [
+          req.groupId,
+          req.user.id,
+          media.type,
+          media.relativeContentPath,
+          validReplyToId,
+          media.fileName,
+          media.fileSizeBytes,
+          media.relativeThumbnailPath,
+          media.durationSeconds,
+        ]
+      );
+      const message = { ...result.rows[0], sender_username: req.user.username, group_id: req.groupId };
+      emitToGroup(req.groupId, "group_message:new", message);
+      res.status(201).json(message);
+    } catch (dbErr) {
+      console.error(dbErr);
+      fs.unlink(req.file.path, () => {});
+      res.status(500).json({ error: "couldn't send that file" });
     }
   });
 });

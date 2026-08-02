@@ -16,7 +16,8 @@ const playbackRoutes = require("./routes/playback");
 const conversationsRoutes = require("./routes/conversations");
 const starredRoutes = require("./routes/starred");
 const pool = require("./db/pool");
-const { setIO } = require("./realtime");
+const { setIO, emitToUser } = require("./realtime");
+const presence = require("./presence");
 
 const app = express();
 app.use(cors());
@@ -85,6 +86,9 @@ io.on("connection", async (socket) => {
   }
 
   console.log(`socket connected: ${socket.user.username} (${socket.id})`);
+  presence.handleSocketConnect(socket.user.id, socket.id, emitToUser).catch((err) =>
+    console.error("presence connect handling failed:", err.message)
+  );
 
   // Typing indicators are purely ephemeral — no DB, just a relay through
   // the same room structure used for messages. socket.to() (not io.to())
@@ -110,6 +114,9 @@ io.on("connection", async (socket) => {
 
   socket.on("disconnect", () => {
     console.log(`socket disconnected: ${socket.user.username}`);
+    presence.handleSocketDisconnect(socket.user.id, socket.id, emitToUser).catch((err) =>
+      console.error("presence disconnect handling failed:", err.message)
+    );
   });
 });
 

@@ -1,6 +1,7 @@
 const express = require("express");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
+const presence = require("../presence");
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ router.get("/", requireAuth, async (req, res) => {
          WHERE sender_id = $1 OR receiver_id = $1
        )
        SELECT DISTINCT ON (dp.other_user_id)
-         dp.other_user_id, u.username, u.avatar,
+         dp.other_user_id, u.username, u.avatar, u.last_seen_at,
          m.content, m.type, m.created_at, m.sender_id
        FROM dm_partners dp
        JOIN users u ON u.id = dp.other_user_id
@@ -71,6 +72,8 @@ router.get("/", requireAuth, async (req, res) => {
       id: row.other_user_id,
       username: row.username,
       avatar: row.avatar,
+      online: presence.isOnline(row.other_user_id),
+      lastSeenAt: presence.isOnline(row.other_user_id) ? null : row.last_seen_at,
       lastMessage: { content: row.content, type: row.type, senderId: row.sender_id },
       lastActivityAt: row.created_at,
       unreadCount: dmUnreadMap.get(row.other_user_id) || 0,

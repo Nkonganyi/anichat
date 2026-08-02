@@ -6,10 +6,12 @@ const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { emitToUser, emitToUserWithAck, emitToGroup } = require("../realtime");
+const { resolveMediaFields } = require("../lib/mediaProcessing");
+const presence = require("../presence");
 
 const router = express.Router();
 
-const VALID_TYPES = ["text", "sticker", "gif", "voice"];
+const VALID_TYPES = ["text", "sticker", "gif", "voice", "video_note", "file", "image", "video"];
 
 const VOICE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "voice-notes");
 fs.mkdirSync(VOICE_UPLOAD_DIR, { recursive: true });
@@ -31,6 +33,65 @@ function voiceFileFilter(req, file, cb) {
 }
 
 const uploadVoice = multer({ storage: voiceStorage, fileFilter: voiceFileFilter, limits: { fileSize: MAX_VOICE_SIZE } });
+
+const VIDEO_NOTE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "video-notes");
+fs.mkdirSync(VIDEO_NOTE_UPLOAD_DIR, { recursive: true });
+const MAX_VIDEO_NOTE_SIZE = 20 * 1024 * 1024; // short circular video clips, not full videos
+
+const videoNoteStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, VIDEO_NOTE_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".webm";
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+
+function videoNoteFileFilter(req, file, cb) {
+  console.log(`[video-note upload] originalname=${file.originalname} mimetype=${file.mimetype}`);
+  if (!file.mimetype.startsWith("video/")) {
+    return cb(new Error(`only video recordings are allowed (got mimetype: "${file.mimetype}")`));
+  }
+  cb(null, true);
+}
+
+const uploadVideoNote = multer({
+  storage: videoNoteStorage,
+  fileFilter: videoNoteFileFilter,
+  limits: { fileSize: MAX_VIDEO_NOTE_SIZE },
+});
+
+const FILE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "files");
+fs.mkdirSync(FILE_UPLOAD_DIR, { recursive: true });
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // generic documents — not a video hosting service
+
+// Anything can be shared (PDFs, zips, docs, etc.) except file types that are
+// only ever useful for running code on the recipient's machine — a chat app
+// shouldn't be a vector for handing someone a disguised executable.
+const BLOCKED_FILE_EXTENSIONS = new Set([
+  ".exe", ".msi", ".bat", ".cmd", ".sh", ".scr", ".com", ".jar", ".app", ".dll", ".ps1", ".vbs",
+]);
+
+const fileStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, FILE_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || "";
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+
+function genericFileFilter(req, file, cb) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (BLOCKED_FILE_EXTENSIONS.has(ext)) {
+    return cb(new Error(`files of type "${ext}" can't be shared`));
+  }
+  cb(null, true);
+}
+
+const uploadFile = multer({
+  storage: fileStorage,
+  fileFilter: genericFileFilter,
+  limits: { fileSize: MAX_FILE_SIZE },
+});
 
 // Send a message to another user (by username)
 router.post("/", requireAuth, async (req, res) => {
@@ -181,20 +242,177 @@ router.post("/voice", requireAuth, (req, res) => {
   });
 });
 
+// Send a video note — short circular video message, multipart upload
+router.post("/video-note", requireAuth, (req, res) => {
+  uploadVideoNote.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "video note is too large — max 20MB (keep it under ~60 seconds)" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "a video recording is required (field name: 'file')" });
+
+    const { to, replyToId } = req.body;
+    const durationSeconds = parseInt(req.body.durationSeconds, 10) || null;
+
+    if (!to) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: "'to' is required" });
+    }
+
+    try {
+      const receiverResult = await pool.query("SELECT id FROM users WHERE username = $1", [to]);
+      const receiver = receiverResult.rows[0];
+      if (!receiver) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(404).json({ error: `no user named '${to}'` });
+      }
+      if (receiver.id === req.user.id) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "you can't message yourself" });
+      }
+
+      let validReplyToId = null;
+      if (replyToId) {
+        const rq = await pool.query(
+          "SELECT id FROM messages WHERE id = $1 AND ((sender_id = $2 AND receiver_id = $3) OR (sender_id = $3 AND receiver_id = $2))",
+          [replyToId, req.user.id, receiver.id]
+        );
+        if (rq.rows.length > 0) validReplyToId = replyToId;
+      }
+
+      const relativePath = `video-notes/${req.file.filename}`;
+      const result = await pool.query(
+        `INSERT INTO messages (sender_id, receiver_id, content, type, reply_to_id, video_duration_seconds)
+         VALUES ($1, $2, $3, 'video_note', $4, $5)
+         RETURNING id, sender_id, receiver_id, content, type, reply_to_id, video_duration_seconds, delivered_at, created_at`,
+        [req.user.id, receiver.id, relativePath, validReplyToId, durationSeconds]
+      );
+
+      const message = result.rows[0];
+      emitToUser(receiver.id, "message:new", message);
+      emitToUser(req.user.id, "message:new", message);
+      res.status(201).json(message);
+
+      emitToUserWithAck(receiver.id, "message:new", message)
+        .then(async (delivered) => {
+          if (!delivered) return;
+          const updateResult = await pool.query(
+            "UPDATE messages SET delivered_at = now() WHERE id = $1 RETURNING delivered_at",
+            [message.id]
+          );
+          emitToUser(req.user.id, "message:delivered", { messageId: message.id, deliveredAt: updateResult.rows[0].delivered_at });
+        })
+        .catch((e) => console.error("delivery ack failed:", e.message));
+    } catch (dbErr) {
+      console.error(dbErr);
+      fs.unlink(req.file.path, () => {});
+      res.status(500).json({ error: "couldn't send video note" });
+    }
+  });
+});
+
+// Send a document/file — multipart upload, field name "file", plus "to"
+// and optional "replyToId". Unlike voice/video notes this isn't recorded
+// in-app, so there's no durationSeconds — just the file itself.
+router.post("/file", requireAuth, (req, res) => {
+  uploadFile.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "file is too large — max 25MB" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "a file is required (field name: 'file')" });
+
+    const { to, replyToId } = req.body;
+
+    if (!to) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: "'to' is required" });
+    }
+
+    try {
+      const receiverResult = await pool.query("SELECT id FROM users WHERE username = $1", [to]);
+      const receiver = receiverResult.rows[0];
+      if (!receiver) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(404).json({ error: `no user named '${to}'` });
+      }
+      if (receiver.id === req.user.id) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "you can't message yourself" });
+      }
+
+      let validReplyToId = null;
+      if (replyToId) {
+        const rq = await pool.query(
+          "SELECT id FROM messages WHERE id = $1 AND ((sender_id = $2 AND receiver_id = $3) OR (sender_id = $3 AND receiver_id = $2))",
+          [replyToId, req.user.id, receiver.id]
+        );
+        if (rq.rows.length > 0) validReplyToId = replyToId;
+      }
+
+      // Images/videos get compressed + get a thumbnail generated; anything
+      // else (pdf, zip, ...) stays on the plain generic-file path.
+      const media = await resolveMediaFields(req.file);
+
+      const result = await pool.query(
+        `INSERT INTO messages (sender_id, receiver_id, content, type, reply_to_id, file_name, file_size_bytes, thumbnail_path, video_duration_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, sender_id, receiver_id, content, type, reply_to_id, file_name, file_size_bytes, thumbnail_path, video_duration_seconds, delivered_at, created_at`,
+        [
+          req.user.id,
+          receiver.id,
+          media.relativeContentPath,
+          media.type,
+          validReplyToId,
+          media.fileName,
+          media.fileSizeBytes,
+          media.relativeThumbnailPath,
+          media.durationSeconds,
+        ]
+      );
+
+      const message = result.rows[0];
+      emitToUser(receiver.id, "message:new", message);
+      emitToUser(req.user.id, "message:new", message);
+      res.status(201).json(message);
+
+      emitToUserWithAck(receiver.id, "message:new", message)
+        .then(async (delivered) => {
+          if (!delivered) return;
+          const updateResult = await pool.query(
+            "UPDATE messages SET delivered_at = now() WHERE id = $1 RETURNING delivered_at",
+            [message.id]
+          );
+          emitToUser(req.user.id, "message:delivered", { messageId: message.id, deliveredAt: updateResult.rows[0].delivered_at });
+        })
+        .catch((e) => console.error("delivery ack failed:", e.message));
+    } catch (dbErr) {
+      console.error(dbErr);
+      fs.unlink(req.file.path, () => {}); // no-op if media processing already moved/removed it
+      res.status(500).json({ error: "couldn't send that file" });
+    }
+  });
+});
+
 // Get the full conversation between the logged-in user and :username
 router.get("/with/:username", requireAuth, async (req, res) => {
   try {
-    const otherResult = await pool.query("SELECT id, username, avatar FROM users WHERE username = $1", [
+    const otherResult = await pool.query("SELECT id, username, avatar, last_seen_at FROM users WHERE username = $1", [
       req.params.username,
     ]);
     const other = otherResult.rows[0];
     if (!other) {
       return res.status(404).json({ error: `no user named '${req.params.username}'` });
     }
+    // Online status itself only ever lives in memory (see presence.js) —
+    // last_seen_at from the DB is just the fallback for "when they weren't."
+    other.online = presence.isOnline(other.id);
+    if (other.online) other.last_seen_at = null;
 
     const result = await pool.query(
       `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at,
-              m.pinned_at, m.forwarded_from_username, m.voice_duration_seconds, m.created_at,
+              m.pinned_at, m.forwarded_from_username, m.voice_duration_seconds, m.video_duration_seconds,
+              m.file_name, m.file_size_bytes, m.thumbnail_path, m.created_at,
               CASE WHEN m.deleted_at IS NULL THEN m.content ELSE NULL END AS content,
               rq.id AS reply_id, rq.type AS reply_type, rq.deleted_at AS reply_deleted_at,
               CASE WHEN rq.deleted_at IS NULL THEN rq.content ELSE NULL END AS reply_content,
@@ -223,6 +441,10 @@ router.get("/with/:username", requireAuth, async (req, res) => {
       pinned_at: row.pinned_at,
       forwarded_from_username: row.forwarded_from_username,
       voice_duration_seconds: row.voice_duration_seconds,
+      video_duration_seconds: row.video_duration_seconds,
+      file_name: row.file_name,
+      file_size_bytes: row.file_size_bytes,
+      thumbnail_path: row.thumbnail_path,
       starred_by_me: row.starred_by_me,
       created_at: row.created_at,
       replyTo: row.reply_id
@@ -477,10 +699,20 @@ router.post("/:messageId/forward", requireAuth, async (req, res) => {
       if (receiver.id === req.user.id) return res.status(400).json({ error: "you can't message yourself" });
 
       const result = await pool.query(
-        `INSERT INTO messages (sender_id, receiver_id, content, type, forwarded_from_username)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, sender_id, receiver_id, content, type, forwarded_from_username, delivered_at, created_at`,
-        [req.user.id, receiver.id, source.content, source.type, source.sender_username]
+        `INSERT INTO messages (sender_id, receiver_id, content, type, forwarded_from_username, file_name, file_size_bytes, thumbnail_path, video_duration_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, sender_id, receiver_id, content, type, forwarded_from_username, file_name, file_size_bytes, thumbnail_path, video_duration_seconds, delivered_at, created_at`,
+        [
+          req.user.id,
+          receiver.id,
+          source.content,
+          source.type,
+          source.sender_username,
+          source.file_name,
+          source.file_size_bytes,
+          source.thumbnail_path,
+          source.video_duration_seconds,
+        ]
       );
       const message = result.rows[0];
       emitToUser(receiver.id, "message:new", message);
@@ -499,10 +731,20 @@ router.post("/:messageId/forward", requireAuth, async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO group_messages (group_id, sender_id, content, type, forwarded_from_username)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, sender_id, content, type, forwarded_from_username, created_at`,
-      [groupId, req.user.id, source.content, source.type, source.sender_username]
+      `INSERT INTO group_messages (group_id, sender_id, content, type, forwarded_from_username, file_name, file_size_bytes, thumbnail_path, video_duration_seconds)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, sender_id, content, type, forwarded_from_username, file_name, file_size_bytes, thumbnail_path, video_duration_seconds, created_at`,
+      [
+        groupId,
+        req.user.id,
+        source.content,
+        source.type,
+        source.sender_username,
+        source.file_name,
+        source.file_size_bytes,
+        source.thumbnail_path,
+        source.video_duration_seconds,
+      ]
     );
     const message = { ...result.rows[0], sender_username: req.user.username, group_id: groupId };
     emitToGroup(groupId, "group_message:new", message);

@@ -382,3 +382,71 @@ export async function sendGroupVoiceMessage(token, groupId, blob, durationSecond
   if (!res.ok) throw new Error(data.error || "couldn't send voice message");
   return data;
 }
+
+export async function sendVideoNote(token, toUsername, blob, durationSeconds, replyToId) {
+  const formData = new FormData();
+  formData.append("file", blob, "note.webm");
+  formData.append("to", toUsername);
+  formData.append("durationSeconds", String(durationSeconds));
+  if (replyToId) formData.append("replyToId", String(replyToId));
+
+  const res = await fetch(`${BACKEND_URL}/api/messages/video-note`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't send video note");
+  return data;
+}
+
+export async function sendGroupVideoNote(token, groupId, blob, durationSeconds, replyToId) {
+  const formData = new FormData();
+  formData.append("file", blob, "note.webm");
+  formData.append("durationSeconds", String(durationSeconds));
+  if (replyToId) formData.append("replyToId", String(replyToId));
+
+  const res = await fetch(`${BACKEND_URL}/api/groups/${groupId}/messages/video-note`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't send video note");
+  return data;
+}
+
+// Document/file sharing. `file` is usually a real File object from an
+// <input type="file">, whose name/type ride along automatically — but when
+// the image compression pipeline runs, it produces a plain Blob (canvas
+// output has no filename), so an explicit `fileName` override is supported.
+export async function sendFileMessage(token, toUsername, file, replyToId, fileName) {
+  const formData = new FormData();
+  formData.append("file", file, fileName || file.name);
+  formData.append("to", toUsername);
+  if (replyToId) formData.append("replyToId", String(replyToId));
+
+  const res = await fetch(`${BACKEND_URL}/api/messages/file`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't send that file");
+  return data;
+}
+
+export async function sendGroupFileMessage(token, groupId, file, replyToId, fileName) {
+  const formData = new FormData();
+  formData.append("file", file, fileName || file.name);
+  if (replyToId) formData.append("replyToId", String(replyToId));
+
+  const res = await fetch(`${BACKEND_URL}/api/groups/${groupId}/messages/file`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't send that file");
+  return data;
+}

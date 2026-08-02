@@ -1,26 +1,26 @@
-# AniChat — Milestone 14: Voice Messages
+# AniChat — Milestone 15: Video Notes
 
-First item from the "Voice & rich media" section of the spec, built and
-tested on its own as requested.
+Second item from the "Voice & rich media" section — the Telegram-style
+short circular video message, built the same way as voice messages: its
+own recording flow, its own player, fully tested on the backend before
+any frontend work started.
 
 ## What's new
 
-Click the 🎤 button in any DM or group composer. It starts recording
-immediately (your browser will ask for microphone permission the first
-time) — you'll see a pulsing red dot and a live timer. Hit **Send** to
-finish and send it, or **Cancel** to throw it away. Recordings auto-stop
-at 3 minutes as a sane ceiling.
+Click the 📹 button next to the mic in any composer. Your browser will ask
+for camera *and* microphone permission the first time. You'll see a live
+circular preview of yourself (mirrored, like a selfie camera) with a
+recording timer. Hit **Send** to finish, or **Cancel** to discard.
+Recordings auto-stop at 60 seconds.
 
-Recorded messages show up as a proper voice player bubble — play/pause
-button, a decorative waveform, and the duration — not just a raw file
-link. Works identically for both the sender and recipient's playback.
+Received video notes show up as a round, tap-to-play video bubble with a
+duration label — not a generic video file link.
 
-Because voice messages are just another message type under the hood, they
-automatically got everything already built for other messages, with zero
-extra work: reactions, replies, delivery ticks, read receipts, pin, star,
-forward, delete. I specifically tested that reactions work on a voice
-message to confirm this "generic system" assumption actually held up in
-practice, not just in theory.
+Same as voice messages, this reused the existing generic message
+machinery automatically: reactions, replies, delivery ticks, pin, star,
+forward, delete all work on a video note with zero extra code, since
+under the hood it's just another message type. I specifically tested
+reactions on a video note to confirm that held up, not just assumed it.
 
 ## Nothing new to set up
 
@@ -39,55 +39,48 @@ npm install
 npm run dev
 ```
 
-The migration adds one column (`voice_duration_seconds`) to both message
+The migration adds one column (`video_duration_seconds`) to both message
 tables. Nothing existing changes.
 
-## How I tested the backend (no browser available on my end)
+## How I tested the backend
 
-I couldn't record real audio through an actual microphone from my
-sandbox, obviously — but I could and did generate real, valid Opus audio
-files with ffmpeg and upload them through the exact same code path a
-browser would use (`FormData` + `fetch`, not a fake shortcut). Then I
-downloaded the file back through the server and verified with `ffprobe`
-that what came back is genuinely valid, correctly-timed audio — not just
-bytes that happened to save. I also confirmed: non-audio files get
-rejected, oversized files get rejected (8MB cap), voice messages can be
-replies, and non-members can't send voice messages into a group they're
-not in.
+Generated a real short video (VP8 video + Opus audio, matching what a
+browser's MediaRecorder actually produces) with ffmpeg, uploaded it
+through the exact `FormData`/`fetch` path a browser would use, downloaded
+it back through the server, and verified with `ffprobe` that both the
+video *and* audio streams survived intact with the correct duration — not
+just that bytes made it through. Also confirmed: non-video files get
+rejected, oversized files get rejected (20MB cap), video notes can be
+replies, and non-members can't send one into a group they're not in.
 
-**What I couldn't test myself:** the actual in-browser recording
-experience — permission prompts, what your specific browser's
-MediaRecorder produces, whether playback feels smooth. That's the part
-that needs your real test.
+**What I couldn't test myself:** the actual in-browser camera experience
+— permission prompts, live preview quality, whether the recording feels
+responsive. That part is on you.
 
 ## How to test it yourself
 
-1. Click 🎤 in a DM, say something, hit Send
-2. Confirm it appears as a playable voice bubble for you, and — open a
-   second window — for the other person too, live
-3. Play it back — confirms the waveform progress and duration display
-   update as it plays
-4. Try Cancel mid-recording — confirms nothing gets sent
-5. Try reacting to a voice message, or replying to one — confirms those
-   generic features really do "just work"
-6. Try it in a group too
+1. Click 📹 in a DM, record a few seconds, hit Send
+2. Confirm it shows up as a round, playable video for both you and the
+   other person, live
+3. Tap it to play/pause — confirm the play icon disappears while playing
+4. Try Cancel mid-recording — confirms nothing sends
+5. Try reacting to or replying to a video note
+6. Try it in a group
 
 ## What's intentionally *not* here yet
 
-- No hold-to-record (press and hold a button, release to send) — this is
-  tap-to-start, tap-to-send, which is more reliable across mouse vs.
-  touch input and doesn't risk losing a recording if your finger slips
-- Waveform is decorative/stylized, not a literal amplitude visualization
-  of the actual audio — matches what most chat apps actually do, real
-  waveform analysis is a lot of extra complexity for limited payoff
-- No transcription
+- No filters/effects on the camera preview
+- Fixed 60-second cap, no way to extend it
+- No option to switch between front/back camera (defaults to
+  front-facing, `facingMode: "user"`) — reasonable for a "video selfie"
+  style message, less so if someone wants to quickly show something in
+  front of them instead of their own face
 
 ## If something goes wrong
 
-- **🎤 button does nothing, or shows a permission error** → check your
-  browser's microphone permission for this site (usually a padlock/icon
-  in the address bar)
+- **📹 button does nothing, or shows a permission error** → check your
+  browser's camera *and* microphone permissions for this site
 - **Recording works but sending fails** → check the backend terminal for
-  the exact error
-- Anything else → same as always, exact error text (or what you see/hear)
-  gets you a fast fix
+  the exact error, and note the 20MB size cap
+- Anything else → same as always, exact error text (or what you see) gets
+  you a fast fix

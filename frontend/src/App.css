@@ -440,6 +440,26 @@ input:focus {
   gap: 8px;
 }
 
+.conversation-title-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.presence-label {
+  font-size: 10px;
+}
+
+.presence-label.online {
+  color: var(--online);
+}
+
+.presence-label.offline {
+  color: var(--muted);
+}
+
 /* ---- popovers (avatar/sticker/emoji/gif/theme pickers) ---- */
 .popover {
   background: var(--bg-2);
@@ -960,6 +980,24 @@ input:focus {
   justify-content: center;
   font-size: 16px;
   flex-shrink: 0;
+}
+
+.inbox-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.inbox-online-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--online);
+  border: 2px solid var(--bg-1, var(--surface));
+  box-shadow: 0 0 4px var(--online);
 }
 
 .inbox-row-main {
@@ -1547,4 +1585,178 @@ input:focus {
 
 .voice-message.mine .voice-duration {
   color: rgba(255, 255, 255, 0.85);
+}
+
+/* ---- video note player ---- */
+.video-note {
+  position: relative;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: pointer;
+  background: #000;
+  border: 2px solid var(--surface-light);
+}
+
+.video-note-el {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-note-play-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 22px;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.video-note-duration {
+  position: absolute;
+  bottom: 6px;
+  right: 10px;
+  color: #fff;
+  font-size: 9px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- file/document message card ---- */
+.file-message {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-light);
+  border-radius: 14px 14px 14px 4px;
+  padding: 10px 12px;
+  min-width: 200px;
+  max-width: 260px;
+  text-decoration: none;
+  color: var(--text);
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.file-message:hover {
+  filter: brightness(1.08);
+}
+
+.file-message.mine {
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-radius: 14px 14px 4px 14px;
+  color: var(--bg-2);
+}
+
+.file-message-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.file-message-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-message-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-message-size {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.file-message.mine .file-message-size {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.file-message-download {
+  font-size: 14px;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+/* ---- compressed image message ---- */
+.image-message {
+  display: block;
+  max-width: 260px;
+  border-radius: 14px;
+  overflow: hidden;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.image-message img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 320px;
+  object-fit: cover;
+}
+
+/* ---- compressed video message (rectangular, not the circular video note) ---- */
+.video-message {
+  position: relative;
+  max-width: 280px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #000;
+}
+
+.video-message video {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+}
+
+.video-message-duration {
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  color: #fff;
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* ---- video note recording ---- */
+.video-recording-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--offline);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.video-recording-preview {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #000;
+  transform: scaleX(-1); /* mirror, like a selfie camera */
+}
+
+.video-recording-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

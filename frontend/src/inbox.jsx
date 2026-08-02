@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getConversations } from "./api";
-import { AvatarBadge } from "./pickers";
+import { AvatarBadge, PresenceLabel } from "./pickers";
 import { getAvatar } from "./constants";
 import { getVoice } from "./voices";
 
@@ -26,7 +26,7 @@ function previewText(lastMessage) {
   return content.length > 40 ? content.slice(0, 40) + "…" : content;
 }
 
-export function InboxPanel({ token, myTheme, socket, onOpenConversation }) {
+export function InboxPanel({ token, myTheme, socket, presence, onOpenConversation }) {
   const [conversations, setConversations] = useState(null);
   const [error, setError] = useState("");
   const voice = getVoice(myTheme);
@@ -67,25 +67,34 @@ export function InboxPanel({ token, myTheme, socket, onOpenConversation }) {
       {conversations?.length === 0 && <p className="muted center small-text">{voice.emptyConversations}</p>}
 
       <div className="inbox-list">
-        {conversations?.map((c) => (
-          <button key={`${c.kind}-${c.id}`} className="inbox-row" onClick={() => onOpenConversation(c)}>
-            {c.kind === "dm" ? (
-              <AvatarBadge avatar={getAvatar(c.avatar)} size={36} />
-            ) : (
-              <span className="inbox-group-icon">👥</span>
-            )}
-            <div className="inbox-row-main">
-              <div className="inbox-row-top">
-                <span className="inbox-row-name">{c.kind === "dm" ? c.username : c.name}</span>
-                {c.lastActivityAt && <span className="inbox-row-time">{formatRelativeTime(c.lastActivityAt)}</span>}
+        {conversations?.map((c) => {
+          const livePresence = c.kind === "dm" ? presence?.[c.id] : null;
+          const online = livePresence ? livePresence.online : c.online;
+          const lastSeenAt = livePresence ? livePresence.lastSeenAt : c.lastSeenAt;
+          return (
+            <button key={`${c.kind}-${c.id}`} className="inbox-row" onClick={() => onOpenConversation(c)}>
+              {c.kind === "dm" ? (
+                <span className="inbox-avatar-wrap">
+                  <AvatarBadge avatar={getAvatar(c.avatar)} size={36} />
+                  {online && <span className="inbox-online-dot" title="Online" />}
+                </span>
+              ) : (
+                <span className="inbox-group-icon">👥</span>
+              )}
+              <div className="inbox-row-main">
+                <div className="inbox-row-top">
+                  <span className="inbox-row-name">{c.kind === "dm" ? c.username : c.name}</span>
+                  {c.lastActivityAt && <span className="inbox-row-time">{formatRelativeTime(c.lastActivityAt)}</span>}
+                </div>
+                <div className="inbox-row-bottom">
+                  <span className="inbox-row-preview">{previewText(c.lastMessage)}</span>
+                  {c.unreadCount > 0 && <span className="inbox-unread-badge">{c.unreadCount}</span>}
+                </div>
+                {c.kind === "dm" && <PresenceLabel online={online} lastSeenAt={lastSeenAt} compact />}
               </div>
-              <div className="inbox-row-bottom">
-                <span className="inbox-row-preview">{previewText(c.lastMessage)}</span>
-                {c.unreadCount > 0 && <span className="inbox-unread-badge">{c.unreadCount}</span>}
-              </div>
-            </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

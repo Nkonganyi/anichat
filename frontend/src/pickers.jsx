@@ -10,6 +10,31 @@ function formatDuration(totalSeconds) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function formatLastSeen(iso) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return date.toLocaleDateString();
+}
+
+// Shared between the DM header and the inbox list so "online" / "last seen"
+// reads identically everywhere it shows up. `lastSeenAt` being null while
+// offline just means we've never recorded a disconnect for them yet (e.g.
+// a brand new account) — nothing to show in that case, not an error.
+export function PresenceLabel({ online, lastSeenAt, compact }) {
+  if (online) return <span className="presence-label online">{compact ? "●" : "● Online"}</span>;
+  const rel = formatLastSeen(lastSeenAt);
+  if (!rel) return null;
+  return <span className="presence-label offline">{compact ? rel : `Last seen ${rel}`}</span>;
+}
+
 export function VoiceMessagePlayer({ src, durationSeconds, mine }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
@@ -282,6 +307,88 @@ export function PinnedBar({ pinnedMessages, onUnpin, canUnpin }) {
   );
 }
 
+export function VideoNotePlayer({ src, durationSeconds }) {
+  const videoRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+
+  function togglePlay() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (playing) {
+      video.pause();
+      setPlaying(false);
+    } else {
+      video.play().catch(() => {});
+      setPlaying(true);
+    }
+  }
+
+  return (
+    <div className="video-note" onClick={togglePlay}>
+      <video
+        ref={videoRef}
+        src={src}
+        playsInline
+        onEnded={() => setPlaying(false)}
+        className="video-note-el"
+      />
+      {!playing && <span className="video-note-play-overlay">▶</span>}
+      <span className="video-note-duration">{formatDuration(durationSeconds)}</span>
+    </div>
+  );
+}
+
+function formatFileSize(bytes) {
+  if (!bytes && bytes !== 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Generic file-preview card — deliberately not trying to render a type-specific
+// icon per extension; a single document glyph keeps this from needing an
+// ever-growing icon set as new file types get shared.
+export function FileMessageCard({ src, fileName, fileSizeBytes, mine }) {
+  return (
+    <a
+      className={`file-message ${mine ? "mine" : ""}`}
+      href={src}
+      download={fileName || undefined}
+      target="_blank"
+      rel="noreferrer"
+    >
+      <span className="file-message-icon">📄</span>
+      <div className="file-message-info">
+        <span className="file-message-name">{fileName || "file"}</span>
+        <span className="file-message-size">{formatFileSize(fileSizeBytes)}</span>
+      </div>
+      <span className="file-message-download">⬇</span>
+    </a>
+  );
+}
+
+// Compressed photo — shown at chat-bubble size using the server-generated
+// thumbnail (fast to load), full resolution opens in a new tab on click.
+export function ImageMessage({ thumbSrc, fullSrc, mine }) {
+  return (
+    <a href={fullSrc} target="_blank" rel="noreferrer" className={`image-message ${mine ? "mine" : ""}`}>
+      <img src={thumbSrc} alt="shared photo" loading="lazy" />
+    </a>
+  );
+}
+
+// Compressed video — a normal (non-circular) inline player, distinct from
+// VideoNotePlayer's circular in-app-recorded clips. Uses the server-generated
+// poster frame so the bubble doesn't need to download the video to render.
+export function VideoMessage({ src, posterSrc, durationSeconds }) {
+  return (
+    <div className="video-message">
+      <video src={src} poster={posterSrc} controls playsInline preload="metadata" />
+      {durationSeconds != null && <span className="video-message-duration">{formatDuration(durationSeconds)}</span>}
+    </div>
+  );
+}
+
 export function MessageContent({ message, mine }) {
   const replyPreview = message.replyTo && (
     <div className="reply-preview">
@@ -331,6 +438,59 @@ export function MessageContent({ message, mine }) {
           src={`${BACKEND_URL}/uploads/${message.content}`}
           durationSeconds={message.voice_duration_seconds}
           mine={mine}
+        />
+      </div>
+    );
+  }
+
+  if (message.type === "video_note") {
+    return (
+      <div>
+        {forwardedLabel}
+        {replyPreview}
+        <VideoNotePlayer src={`${BACKEND_URL}/uploads/${message.content}`} durationSeconds={message.video_duration_seconds} />
+      </div>
+    );
+  }
+
+  if (message.type === "file") {
+    return (
+      <div>
+        {forwardedLabel}
+        {replyPreview}
+        <FileMessageCard
+          src={`${BACKEND_URL}/uploads/${message.content}`}
+          fileName={message.file_name}
+          fileSizeBytes={message.file_size_bytes}
+          mine={mine}
+        />
+      </div>
+    );
+  }
+
+  if (message.type === "image") {
+    return (
+      <div>
+        {forwardedLabel}
+        {replyPreview}
+        <ImageMessage
+          thumbSrc={`${BACKEND_URL}/uploads/${message.thumbnail_path || message.content}`}
+          fullSrc={`${BACKEND_URL}/uploads/${message.content}`}
+          mine={mine}
+        />
+      </div>
+    );
+  }
+
+  if (message.type === "video") {
+    return (
+      <div>
+        {forwardedLabel}
+        {replyPreview}
+        <VideoMessage
+          src={`${BACKEND_URL}/uploads/${message.content}`}
+          posterSrc={message.thumbnail_path ? `${BACKEND_URL}/uploads/${message.thumbnail_path}` : undefined}
+          durationSeconds={message.video_duration_seconds}
         />
       </div>
     );

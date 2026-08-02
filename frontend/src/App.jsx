@@ -39,9 +39,15 @@ import {
   getStarredMessages,
   sendVoiceMessage,
   sendGroupVoiceMessage,
+  sendVideoNote,
+  sendGroupVideoNote,
+  sendFileMessage,
+  sendGroupFileMessage,
   BACKEND_URL,
 } from "./api";
+import { compressImageIfNeeded } from "./imageCompression";
 import { useVoiceRecorder } from "./voiceRecorder";
+import { useVideoNoteRecorder } from "./videoRecorder";
 import { ListenTogether } from "./listenTogether";
 import { InboxPanel } from "./inbox";
 import { getVoice, renderSystemMessage } from "./voices";
@@ -63,6 +69,7 @@ import {
   ReactionPicker,
   ForwardPicker,
   PinnedBar,
+  PresenceLabel,
 } from "./pickers";
 
 // Loaded once, covers every theme's font choices.
@@ -102,7 +109,7 @@ function AuthScreen({ onAuthed }) {
   return (
     <div className="auth-card">
       <h1>AniChat 🌸</h1>
-      <p className="subtitle">Milestone 14 — Voice Messages</p>
+      <p className="subtitle">Milestone 15 — Video Notes</p>
 
       <div className="tab-row">
         <button className={mode === "login" ? "tab active" : "tab"} onClick={() => setMode("login")}>
@@ -135,7 +142,7 @@ function AuthScreen({ onAuthed }) {
   );
 }
 
-function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
+function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
   const [otherUser, setOtherUser] = useState("");
   const [activeChat, setActiveChat] = useState(null); // { id, username, avatar }
   const [messages, setMessages] = useState([]);
@@ -159,6 +166,10 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
   const lastTypingEmitRef = useRef(0);
   const otherTypingTimeoutRef = useRef(null);
   const voiceRecorder = useVoiceRecorder();
+  const videoRecorder = useVideoNoteRecorder();
+  const videoPreviewRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [fileError, setFileError] = useState("");
 
   async function loadConversation(withUsername) {
     try {
@@ -368,6 +379,47 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
     }
   }
 
+  useEffect(() => {
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = videoRecorder.stream;
+    }
+  }, [videoRecorder.stream]);
+
+  async function handleSendVideoNote() {
+    const result = await videoRecorder.stopRecording();
+    if (!result || !activeChat) return;
+    console.log("[video-note] recorded blob type:", result.blob.type, "size:", result.blob.size, "duration:", result.duration);
+    try {
+      await sendVideoNote(token, activeChat.username, result.blob, result.duration, replyTarget?.id || null);
+      setReplyTarget(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function handlePickFile() {
+    setFileError("");
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelected(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow picking the same file again later
+    if (!file || !activeChat) return;
+    setFileError("");
+    try {
+      // Images get compressed client-side before the upload even starts
+      // (the server compresses too, but shrinking it here means less data
+      // over the wire and a faster send). Video is uploaded as-is — see
+      // imageCompression.js for why video compression stays server-side.
+      const { blob, fileName } = await compressImageIfNeeded(file);
+      await sendFileMessage(token, activeChat.username, blob, replyTarget?.id || null, fileName);
+      setReplyTarget(null);
+    } catch (err) {
+      setFileError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -452,11 +504,21 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
 
       {error && <p className="error-text">{error}</p>}
 
-      {activeChat && (
+      {activeChat && (() => {
+        // Live socket updates (if any have arrived since opening this chat)
+        // take priority; otherwise fall back to the snapshot the
+        // conversation-load REST call returned.
+        const livePresence = presence[activeChat.id];
+        const online = livePresence ? livePresence.online : activeChat.online;
+        const lastSeenAt = livePresence ? livePresence.lastSeenAt : activeChat.last_seen_at;
+        return (
         <>
           <div className="conversation-title with-avatar">
             <AvatarBadge avatar={getAvatar(activeChat.avatar)} size={22} />
-            Conversation with {activeChat.username}
+            <div className="conversation-title-text">
+              <span>Conversation with {activeChat.username}</span>
+              <PresenceLabel online={online} lastSeenAt={lastSeenAt} />
+            </div>
             <button className="search-toggle-btn" onClick={() => setSearchOpen((v) => !v)} title="Search in conversation">
               🔍
             </button>
@@ -580,13 +642,27 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
               type="button"
               className={`toolbar-btn ${voiceRecorder.isRecording ? "recording" : ""}`}
               onClick={voiceRecorder.isRecording ? undefined : voiceRecorder.startRecording}
-              disabled={voiceRecorder.isRecording}
+              disabled={voiceRecorder.isRecording || videoRecorder.isRecording}
             >
               🎤
             </button>
+            <button
+              type="button"
+              className={`toolbar-btn ${videoRecorder.isRecording ? "recording" : ""}`}
+              onClick={videoRecorder.isRecording ? undefined : videoRecorder.startRecording}
+              disabled={videoRecorder.isRecording || voiceRecorder.isRecording}
+            >
+              📹
+            </button>
+            <button type="button" className="toolbar-btn" onClick={handlePickFile}>
+              📎
+            </button>
+            <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileSelected} />
           </div>
 
           {voiceRecorder.error && <p className="error-text small-text">{voiceRecorder.error}</p>}
+          {videoRecorder.error && <p className="error-text small-text">{videoRecorder.error}</p>}
+          {fileError && <p className="error-text small-text">{fileError}</p>}
 
           {openPicker === "sticker" && <StickerPicker onPick={(id) => send(id, "sticker")} onClose={() => setOpenPicker(null)} />}
           {openPicker === "emoji" && (
@@ -596,7 +672,23 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
             <GifPicker token={token} onPick={(url) => send(url, "gif")} onClose={() => setOpenPicker(null)} />
           )}
 
-          {voiceRecorder.isRecording ? (
+          {videoRecorder.isRecording ? (
+            <div className="video-recording-bar">
+              <video ref={videoPreviewRef} autoPlay muted playsInline className="video-recording-preview" />
+              <div className="video-recording-controls">
+                <span className="recording-dot" />
+                <span className="recording-timer">
+                  {Math.floor(videoRecorder.elapsedSeconds / 60)}:{(videoRecorder.elapsedSeconds % 60).toString().padStart(2, "0")}
+                </span>
+                <button type="button" className="link-btn" onClick={videoRecorder.cancelRecording}>
+                  Cancel
+                </button>
+                <button type="button" className="primary-btn small" onClick={handleSendVideoNote}>
+                  Send
+                </button>
+              </div>
+            </div>
+          ) : voiceRecorder.isRecording ? (
             <div className="recording-bar">
               <span className="recording-dot" />
               <span className="recording-timer">
@@ -623,7 +715,8 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme }) {
             </form>
           )}
         </>
-      )}
+        );
+      })()}
     </>
   );
 }
@@ -652,6 +745,10 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
   const lastTypingEmitRef = useRef(0);
   const typingClearTimersRef = useRef({});
   const voiceRecorder = useVoiceRecorder();
+  const videoRecorder = useVideoNoteRecorder();
+  const videoPreviewRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [fileError, setFileError] = useState("");
 
   async function refreshGroupList() {
     try {
@@ -785,6 +882,43 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
       setReplyTarget(null);
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = videoRecorder.stream;
+    }
+  }, [videoRecorder.stream]);
+
+  async function handleSendVideoNote() {
+    const result = await videoRecorder.stopRecording();
+    if (!result || !activeGroup) return;
+    console.log("[video-note] recorded blob type:", result.blob.type, "size:", result.blob.size, "duration:", result.duration);
+    try {
+      await sendGroupVideoNote(token, activeGroup.group.id, result.blob, result.duration, replyTarget?.id || null);
+      setReplyTarget(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function handlePickFile() {
+    setFileError("");
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelected(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !activeGroup) return;
+    setFileError("");
+    try {
+      const { blob, fileName } = await compressImageIfNeeded(file);
+      await sendGroupFileMessage(token, activeGroup.group.id, blob, replyTarget?.id || null, fileName);
+      setReplyTarget(null);
+    } catch (err) {
+      setFileError(err.message);
     }
   }
 
@@ -1233,13 +1367,27 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
                 type="button"
                 className={`toolbar-btn ${voiceRecorder.isRecording ? "recording" : ""}`}
                 onClick={voiceRecorder.isRecording ? undefined : voiceRecorder.startRecording}
-                disabled={voiceRecorder.isRecording}
+                disabled={voiceRecorder.isRecording || videoRecorder.isRecording}
               >
                 🎤
               </button>
+              <button
+                type="button"
+                className={`toolbar-btn ${videoRecorder.isRecording ? "recording" : ""}`}
+                onClick={videoRecorder.isRecording ? undefined : videoRecorder.startRecording}
+                disabled={videoRecorder.isRecording || voiceRecorder.isRecording}
+              >
+                📹
+              </button>
+              <button type="button" className="toolbar-btn" onClick={handlePickFile}>
+                📎
+              </button>
+              <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileSelected} />
             </div>
 
             {voiceRecorder.error && <p className="error-text small-text">{voiceRecorder.error}</p>}
+            {videoRecorder.error && <p className="error-text small-text">{videoRecorder.error}</p>}
+            {fileError && <p className="error-text small-text">{fileError}</p>}
 
             {openPicker === "sticker" && <StickerPicker onPick={(id) => send(id, "sticker")} onClose={() => setOpenPicker(null)} />}
             {openPicker === "emoji" && (
@@ -1249,7 +1397,23 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
               <GifPicker token={token} onPick={(url) => send(url, "gif")} onClose={() => setOpenPicker(null)} />
             )}
 
-            {voiceRecorder.isRecording ? (
+            {videoRecorder.isRecording ? (
+              <div className="video-recording-bar">
+                <video ref={videoPreviewRef} autoPlay muted playsInline className="video-recording-preview" />
+                <div className="video-recording-controls">
+                  <span className="recording-dot" />
+                  <span className="recording-timer">
+                    {Math.floor(videoRecorder.elapsedSeconds / 60)}:{(videoRecorder.elapsedSeconds % 60).toString().padStart(2, "0")}
+                  </span>
+                  <button type="button" className="link-btn" onClick={videoRecorder.cancelRecording}>
+                    Cancel
+                  </button>
+                  <button type="button" className="primary-btn small" onClick={handleSendVideoNote}>
+                    Send
+                  </button>
+                </div>
+              </div>
+            ) : voiceRecorder.isRecording ? (
               <div className="recording-bar">
                 <span className="recording-dot" />
                 <span className="recording-timer">
@@ -1580,6 +1744,11 @@ function MainShell({ token, myUserId, myUsername, myAvatar, myTheme, onAvatarCha
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [profileError, setProfileError] = useState("");
+  // Lives here (not inside DMPanel/InboxPanel) for the same reason delivery
+  // acks do — presence updates should keep the whole app's view of who's
+  // online current, not just whichever tab happens to be mounted right now.
+  // Keyed by userId -> { online, lastSeenAt }.
+  const [presence, setPresence] = useState({});
 
   const theme = getTheme(myTheme);
 
@@ -1596,6 +1765,9 @@ function MainShell({ token, myUserId, myUsername, myAvatar, myTheme, onAvatarCha
     // "the app received it," regardless of which tab the person is looking at.
     s.on("message:new", (msg, ack) => {
       if (typeof ack === "function") ack({ received: true });
+    });
+    s.on("presence:update", ({ userId, online, lastSeenAt }) => {
+      setPresence((prev) => ({ ...prev, [userId]: { online, lastSeenAt } }));
     });
     setSocket(s);
     return () => s.disconnect();
@@ -1685,10 +1857,10 @@ function MainShell({ token, myUserId, myUsername, myAvatar, myTheme, onAvatarCha
       </div>
 
       {tab === "inbox" && (
-        <InboxPanel token={token} myTheme={myTheme} socket={socket} onOpenConversation={handleOpenConversation} />
+        <InboxPanel token={token} myTheme={myTheme} socket={socket} presence={presence} onOpenConversation={handleOpenConversation} />
       )}
       {tab === "dm" && (
-        <DMPanel token={token} myUserId={myUserId} socket={socket} openTarget={openTarget} myTheme={myTheme} />
+        <DMPanel token={token} myUserId={myUserId} socket={socket} openTarget={openTarget} myTheme={myTheme} presence={presence} />
       )}
       {tab === "groups" && (
         <GroupsPanel token={token} myUserId={myUserId} socket={socket} openTarget={openTarget} myTheme={myTheme} />

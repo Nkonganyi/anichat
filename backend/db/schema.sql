@@ -184,3 +184,32 @@ CREATE TABLE IF NOT EXISTS starred_messages (
 -- content stores the relative /uploads path, same pattern as other media message types.
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS voice_duration_seconds INTEGER;
 ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS voice_duration_seconds INTEGER;
+
+-- AniChat schema — Milestone 15: video notes (short circular video messages)
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS video_duration_seconds INTEGER;
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS video_duration_seconds INTEGER;
+
+-- AniChat schema — Milestone 16: document/file sharing
+-- content stores the relative /uploads path (same pattern as voice/video note),
+-- file_name preserves the user's original filename for display since the
+-- on-disk filename is a random uuid, file_size_bytes powers the file-card UI.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_name VARCHAR(255);
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS file_name VARCHAR(255);
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
+
+-- AniChat schema — Milestone 17: image/video compression
+-- When a shared file is an image or video, `content` points at the
+-- compressed/full-resolution version and thumbnail_path points at a
+-- small preview (a resized JPEG for images, an extracted frame for
+-- videos). video_duration_seconds (added in M15) is reused here for
+-- compressed video uploads, not just recorded video notes.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS thumbnail_path TEXT;
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS thumbnail_path TEXT;
+
+-- AniChat schema — Milestone 18: presence (online / last seen)
+-- Only written when a user's LAST active socket disconnects (WhatsApp-style
+-- semantics) — "online right now" itself is tracked in-memory on the server
+-- (see backend/presence.js), not in the DB, since it changes far too often
+-- and doesn't need to survive a server restart.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
