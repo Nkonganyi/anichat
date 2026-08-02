@@ -213,3 +213,17 @@ ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS thumbnail_path TEXT;
 -- (see backend/presence.js), not in the DB, since it changes far too often
 -- and doesn't need to survive a server restart.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+
+-- AniChat schema — Milestone 19: mute a chat
+-- muted_until NULL means "muted indefinitely" (until explicitly unmuted);
+-- a real timestamp means the mute auto-expires there. Mirrors the
+-- starred_messages pattern above — one row per (user, chat), 'dm' rows
+-- key off the other user's id, 'group' rows off the group's id.
+CREATE TABLE IF NOT EXISTS chat_mutes (
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  chat_kind    VARCHAR(8) NOT NULL, -- 'dm' | 'group'
+  chat_id      INTEGER NOT NULL,    -- other_user_id for dm, group_id for group
+  muted_until  TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, chat_kind, chat_id)
+);

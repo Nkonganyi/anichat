@@ -409,6 +409,13 @@ router.get("/with/:username", requireAuth, async (req, res) => {
     other.online = presence.isOnline(other.id);
     if (other.online) other.last_seen_at = null;
 
+    const muteResult = await pool.query(
+      "SELECT muted_until FROM chat_mutes WHERE user_id = $1 AND chat_kind = 'dm' AND chat_id = $2 AND (muted_until IS NULL OR muted_until > now())",
+      [req.user.id, other.id]
+    );
+    other.muted = muteResult.rows.length > 0;
+    other.muted_until = muteResult.rows[0]?.muted_until || null;
+
     const result = await pool.query(
       `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at,
               m.pinned_at, m.forwarded_from_username, m.voice_duration_seconds, m.video_duration_seconds,

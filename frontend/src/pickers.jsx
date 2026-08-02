@@ -24,6 +24,40 @@ function formatLastSeen(iso) {
   return date.toLocaleDateString();
 }
 
+// Mute toggle + duration picker, shared between the DM header and group
+// header. Muting is purely a personal preference (no notification system
+// exists yet to actually gate — see README) but the state, the UI, and the
+// auto-expiry are all real and ready for that to plug into later.
+export function MuteButton({ muted, mutedUntil, onMute, onUnmute }) {
+  const [open, setOpen] = useState(false);
+
+  if (muted) {
+    const label = mutedUntil
+      ? `Muted until ${new Date(mutedUntil).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+      : "Muted";
+    return (
+      <button className="mute-toggle-btn muted" onClick={onUnmute} title={`${label} — click to unmute`}>
+        🔕
+      </button>
+    );
+  }
+
+  return (
+    <div className="mute-popover-wrap">
+      <button className="mute-toggle-btn" onClick={() => setOpen((v) => !v)} title="Mute this chat">
+        🔔
+      </button>
+      {open && (
+        <div className="popover mute-duration-popover">
+          <button onClick={() => { onMute(8); setOpen(false); }}>Mute 8 hours</button>
+          <button onClick={() => { onMute(24 * 7); setOpen(false); }}>Mute 1 week</button>
+          <button onClick={() => { onMute(null); setOpen(false); }}>Mute always</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Shared between the DM header and the inbox list so "online" / "last seen"
 // reads identically everywhere it shows up. `lastSeenAt` being null while
 // offline just means we've never recorded a disconnect for them yet (e.g.

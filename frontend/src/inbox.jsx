@@ -84,11 +84,14 @@ export function InboxPanel({ token, myTheme, socket, presence, onOpenConversatio
               <div className="inbox-row-main">
                 <div className="inbox-row-top">
                   <span className="inbox-row-name">{c.kind === "dm" ? c.username : c.name}</span>
+                  {c.muted && <span className="inbox-muted-icon" title="Muted">🔕</span>}
                   {c.lastActivityAt && <span className="inbox-row-time">{formatRelativeTime(c.lastActivityAt)}</span>}
                 </div>
                 <div className="inbox-row-bottom">
                   <span className="inbox-row-preview">{previewText(c.lastMessage)}</span>
-                  {c.unreadCount > 0 && <span className="inbox-unread-badge">{c.unreadCount}</span>}
+                  {c.unreadCount > 0 && (
+                    <span className={`inbox-unread-badge ${c.muted ? "muted" : ""}`}>{c.unreadCount}</span>
+                  )}
                 </div>
                 {c.kind === "dm" && <PresenceLabel online={online} lastSeenAt={lastSeenAt} compact />}
               </div>

@@ -450,3 +450,35 @@ export async function sendGroupFileMessage(token, groupId, file, replyToId, file
   if (!res.ok) throw new Error(data.error || "couldn't send that file");
   return data;
 }
+
+// Mute a chat. `durationHours` omitted/null mutes indefinitely (until
+// explicitly unmuted); otherwise it auto-expires after that many hours.
+export function muteDm(token, username, durationHours = null) {
+  return request(`/api/mutes/dm/${encodeURIComponent(username)}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ durationHours }),
+  });
+}
+
+export function unmuteDm(token, username) {
+  return request(`/api/mutes/dm/${encodeURIComponent(username)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function muteGroup(token, groupId, durationHours = null) {
+  return request(`/api/mutes/group/${groupId}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ durationHours }),
+  });
+}
+
+export function unmuteGroup(token, groupId) {
+  return request(`/api/mutes/group/${groupId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}

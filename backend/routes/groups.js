@@ -221,11 +221,18 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
 
     const groupResult = await pool.query("SELECT id, name, created_at FROM groups WHERE id = $1", [req.groupId]);
 
+    const muteResult = await pool.query(
+      "SELECT muted_until FROM chat_mutes WHERE user_id = $1 AND chat_kind = 'group' AND chat_id = $2 AND (muted_until IS NULL OR muted_until > now())",
+      [req.user.id, req.groupId]
+    );
+
     res.json({
       group: groupResult.rows[0],
       myRole: req.membershipRole,
       members: membersResult.rows,
       messages,
+      muted: muteResult.rows.length > 0,
+      mutedUntil: muteResult.rows[0]?.muted_until || null,
     });
   } catch (err) {
     console.error(err);

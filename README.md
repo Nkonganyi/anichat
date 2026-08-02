@@ -1,26 +1,38 @@
-# AniChat — Milestone 15: Video Notes
+# AniChat — Milestone 19: Mute a Chat
 
-Second item from the "Voice & rich media" section — the Telegram-style
-short circular video message, built the same way as voice messages: its
-own recording flow, its own player, fully tested on the backend before
-any frontend work started.
+First item tackled from the "Chat-level features" section. Mute is a
+per-user, per-chat preference — muting a DM or group only affects your own
+view of it, nobody else's — with an optional auto-expiring duration.
 
 ## What's new
 
-Click the 📹 button next to the mic in any composer. Your browser will ask
-for camera *and* microphone permission the first time. You'll see a live
-circular preview of yourself (mirrored, like a selfie camera) with a
-recording timer. Hit **Send** to finish, or **Cancel** to discard.
-Recordings auto-stop at 60 seconds.
+Every DM and group now has a 🔔/🔕 button in its header, next to the search
+icon. Click it and pick **8 hours**, **1 week**, or **Always**. Once muted,
+the button turns into a 🔕 you can click to unmute at any time, and hovering
+it shows exactly when the mute expires (or "Muted" if it's indefinite).
 
-Received video notes show up as a round, tap-to-play video bubble with a
-duration label — not a generic video file link.
+Muted chats also show a 🔕 next to their name in the inbox list, and their
+unread badge switches from the normal accent color to a muted grey — the
+count is still shown (you don't lose that information), it's just visually
+quieter.
 
-Same as voice messages, this reused the existing generic message
-machinery automatically: reactions, replies, delivery ticks, pin, star,
-forward, delete all work on a video note with zero extra code, since
-under the hood it's just another message type. I specifically tested
-reactions on a video note to confirm that held up, not just assumed it.
+Duration-based mutes actually expire on their own — no need to remember to
+unmute something you muted "for 8 hours." I verified this with a real
+36-second mute and confirmed it silently dropped off after the wait, not
+just that the logic looked right on paper.
+
+## An honest scope note
+
+**There's no active notification system in AniChat yet** — no sound, no
+browser push, no in-app toast. Mute has nothing to actually *silence* right
+now, because nothing makes noise yet. What this milestone built is real:
+a persisted, auto-expiring, per-user mute preference with working UI in
+both the chat header and the inbox list — and it's the natural foundation
+for browser push notifications (still on the roadmap, unbuilt) to check
+before deciding whether to notify someone. I didn't want to quietly build a
+button that looks like it does more than it does, so: right now, muting a
+chat changes how it *looks*, not (yet) whether you'd hear about a new
+message some other way, because no other way exists yet.
 
 ## Nothing new to set up
 
@@ -39,48 +51,54 @@ npm install
 npm run dev
 ```
 
-The migration adds one column (`video_duration_seconds`) to both message
-tables. Nothing existing changes.
+The migration adds one new table (`chat_mutes`). Nothing existing changes.
 
 ## How I tested the backend
 
-Generated a real short video (VP8 video + Opus audio, matching what a
-browser's MediaRecorder actually produces) with ffmpeg, uploaded it
-through the exact `FormData`/`fetch` path a browser would use, downloaded
-it back through the server, and verified with `ffprobe` that both the
-video *and* audio streams survived intact with the correct duration — not
-just that bytes made it through. Also confirmed: non-video files get
-rejected, oversized files get rejected (20MB cap), video notes can be
-replies, and non-members can't send one into a group they're not in.
+Spun up a real Postgres instance and a live server (not just read through
+the code), then exercised it end to end:
 
-**What I couldn't test myself:** the actual in-browser camera experience
-— permission prompts, live preview quality, whether the recording feels
-responsive. That part is on you.
+- Muted a DM forever, confirmed it shows `muted: true` on both the
+  conversation-detail endpoint *and* the conversations list
+- Unmuted it, confirmed both endpoints flip back
+- Muted for a short duration, waited it out for real, confirmed it
+  auto-expired and both endpoints reflect that without any manual cleanup
+  step on my part
+- Confirmed you can't mute yourself, and muting a nonexistent username 404s
+- Muted a group as one member and confirmed a *different* member's view of
+  that same group is unaffected — mute is genuinely per-user, not group-wide
+- Confirmed a non-member gets a 403 trying to mute a group they're not in
+
+**What I couldn't test myself:** the actual button/popover feel in a real
+browser — does the duration popover position sensibly, does the 🔕 icon
+read clearly at inbox-row size, does the grey badge feel like "quieter"
+rather than "broken." That part is on you.
 
 ## How to test it yourself
 
-1. Click 📹 in a DM, record a few seconds, hit Send
-2. Confirm it shows up as a round, playable video for both you and the
-   other person, live
-3. Tap it to play/pause — confirm the play icon disappears while playing
-4. Try Cancel mid-recording — confirms nothing sends
-5. Try reacting to or replying to a video note
-6. Try it in a group
+1. Open a DM, click 🔔 in the header, pick "Mute 8 hours"
+2. Confirm the button becomes 🔕, and hovering it shows the expiry time
+3. Check the inbox — that conversation should now show a 🔕 next to its name
+4. Send yourself an unread message from another account, confirm the badge
+   shows in grey instead of the normal accent color
+5. Click 🔕 to unmute, confirm it goes back to 🔔 and the badge goes back to
+   its normal color
+6. Try the same in a group, and confirm muting it doesn't affect what other
+   members of that group see
 
 ## What's intentionally *not* here yet
 
-- No filters/effects on the camera preview
-- Fixed 60-second cap, no way to extend it
-- No option to switch between front/back camera (defaults to
-  front-facing, `facingMode: "user"`) — reasonable for a "video selfie"
-  style message, less so if someone wants to quickly show something in
-  front of them instead of their own face
+- No actual notification suppression (see the scope note above — there's
+  nothing to suppress yet)
+- No "mute all" bulk action
+- No custom duration picker — just the three presets (8h / 1 week / always)
 
 ## If something goes wrong
 
-- **📹 button does nothing, or shows a permission error** → check your
-  browser's camera *and* microphone permissions for this site
-- **Recording works but sending fails** → check the backend terminal for
-  the exact error, and note the 20MB size cap
+- **Mute button does nothing** → check the backend terminal for the exact
+  error; also confirm the migration ran (`chat_mutes` table needs to exist)
+- **Badge doesn't turn grey** → hard-refresh; the inbox list only re-fetches
+  on certain socket events, so a stale mute state can linger until the next
+  natural refresh
 - Anything else → same as always, exact error text (or what you see) gets
   you a fast fix

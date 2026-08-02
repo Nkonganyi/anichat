@@ -67,6 +67,13 @@ router.get("/", requireAuth, async (req, res) => {
     );
     const groupUnreadMap = new Map(groupUnread.rows.map((r) => [r.group_id, r.unread_count]));
 
+    // ---- Mutes: one query covers both DM and group mutes for this user ----
+    const mutes = await pool.query(
+      "SELECT chat_kind, chat_id, muted_until FROM chat_mutes WHERE user_id = $1 AND (muted_until IS NULL OR muted_until > now())",
+      [userId]
+    );
+    const muteMap = new Map(mutes.rows.map((r) => [`${r.chat_kind}:${r.chat_id}`, r.muted_until]));
+
     const dmConversations = dmLastMessages.rows.map((row) => ({
       kind: "dm",
       id: row.other_user_id,
@@ -77,6 +84,8 @@ router.get("/", requireAuth, async (req, res) => {
       lastMessage: { content: row.content, type: row.type, senderId: row.sender_id },
       lastActivityAt: row.created_at,
       unreadCount: dmUnreadMap.get(row.other_user_id) || 0,
+      muted: muteMap.has(`dm:${row.other_user_id}`),
+      mutedUntil: muteMap.get(`dm:${row.other_user_id}`) || null,
     }));
 
     const groupConversations = groupLastMessages.rows.map((row) => ({
@@ -88,6 +97,8 @@ router.get("/", requireAuth, async (req, res) => {
         : null,
       lastActivityAt: row.created_at,
       unreadCount: groupUnreadMap.get(row.group_id) || 0,
+      muted: muteMap.has(`group:${row.group_id}`),
+      mutedUntil: muteMap.get(`group:${row.group_id}`) || null,
     }));
 
     const conversations = [...dmConversations, ...groupConversations].sort((a, b) => {

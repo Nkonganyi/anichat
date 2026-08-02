@@ -43,6 +43,10 @@ import {
   sendGroupVideoNote,
   sendFileMessage,
   sendGroupFileMessage,
+  muteDm,
+  unmuteDm,
+  muteGroup,
+  unmuteGroup,
   BACKEND_URL,
 } from "./api";
 import { compressImageIfNeeded } from "./imageCompression";
@@ -70,6 +74,7 @@ import {
   ForwardPicker,
   PinnedBar,
   PresenceLabel,
+  MuteButton,
 } from "./pickers";
 
 // Loaded once, covers every theme's font choices.
@@ -420,6 +425,26 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
     }
   }
 
+  async function handleMuteChat(durationHours) {
+    if (!activeChat) return;
+    try {
+      const result = await muteDm(token, activeChat.username, durationHours);
+      setActiveChat((prev) => ({ ...prev, muted: true, muted_until: result.mutedUntil }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleUnmuteChat() {
+    if (!activeChat) return;
+    try {
+      await unmuteDm(token, activeChat.username);
+      setActiveChat((prev) => ({ ...prev, muted: false, muted_until: null }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -522,6 +547,12 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
             <button className="search-toggle-btn" onClick={() => setSearchOpen((v) => !v)} title="Search in conversation">
               🔍
             </button>
+            <MuteButton
+              muted={!!activeChat.muted}
+              mutedUntil={activeChat.muted_until}
+              onMute={handleMuteChat}
+              onUnmute={handleUnmuteChat}
+            />
           </div>
 
           {searchOpen && (
@@ -922,6 +953,26 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
     }
   }
 
+  async function handleMuteGroup(durationHours) {
+    if (!activeGroup) return;
+    try {
+      const result = await muteGroup(token, activeGroup.group.id, durationHours);
+      setActiveGroup((prev) => ({ ...prev, muted: true, mutedUntil: result.mutedUntil }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleUnmuteGroup() {
+    if (!activeGroup) return;
+    try {
+      await unmuteGroup(token, activeGroup.group.id);
+      setActiveGroup((prev) => ({ ...prev, muted: false, mutedUntil: null }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -1206,6 +1257,12 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
               <button className="search-toggle-btn" onClick={() => setSearchOpen((v) => !v)} title="Search in this group">
                 🔍
               </button>
+              <MuteButton
+                muted={!!activeGroup.muted}
+                mutedUntil={activeGroup.mutedUntil}
+                onMute={handleMuteGroup}
+                onUnmute={handleUnmuteGroup}
+              />
             </div>
 
             {searchOpen && (

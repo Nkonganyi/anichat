@@ -1060,6 +1060,19 @@ input:focus {
   flex-shrink: 0;
 }
 
+/* A muted chat still shows its unread count (info isn't hidden) but in a
+   de-emphasized grey rather than the normal accent color, matching how
+   WhatsApp/Telegram visually distinguish muted-but-unread chats. */
+.inbox-unread-badge.muted {
+  background: var(--muted);
+  color: var(--bg-2);
+}
+
+.inbox-muted-icon {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 /* ---- read receipts + typing indicator ---- */
 .msg-ticks {
   display: block;
@@ -1309,6 +1322,55 @@ input:focus {
 }
 
 .search-toggle-btn:hover {
+  color: var(--accent);
+}
+
+.mute-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+}
+
+.mute-toggle-btn:hover {
+  color: var(--accent);
+}
+
+.mute-toggle-btn.muted {
+  color: var(--accent);
+}
+
+.mute-popover-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.mute-duration-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.mute-duration-popover button {
+  background: var(--surface);
+  border: 1px solid var(--surface-light);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mute-duration-popover button:hover {
+  border-color: var(--accent);
   color: var(--accent);
 }
 
