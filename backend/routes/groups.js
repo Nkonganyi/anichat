@@ -164,10 +164,12 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
        FROM group_messages gmsg
        JOIN users u ON u.id = gmsg.sender_id
        LEFT JOIN hidden_messages h ON h.message_kind = 'group' AND h.message_id = gmsg.id AND h.user_id = $2
+       LEFT JOIN chat_clears cc ON cc.user_id = $2 AND cc.chat_kind = 'group' AND cc.chat_id = $1
        LEFT JOIN group_messages rq ON rq.id = gmsg.reply_to_id
        LEFT JOIN users ru ON ru.id = rq.sender_id
        LEFT JOIN starred_messages s ON s.message_kind = 'group' AND s.message_id = gmsg.id AND s.user_id = $2
        WHERE gmsg.group_id = $1 AND h.message_id IS NULL
+         AND gmsg.created_at > COALESCE(cc.cleared_before, 'epoch')
        ORDER BY gmsg.created_at ASC`,
       [req.groupId, req.user.id]
     );
@@ -226,6 +228,11 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
       [req.user.id, req.groupId]
     );
 
+    const archiveResult = await pool.query(
+      "SELECT 1 FROM chat_archives WHERE user_id = $1 AND chat_kind = 'group' AND chat_id = $2",
+      [req.user.id, req.groupId]
+    );
+
     res.json({
       group: groupResult.rows[0],
       myRole: req.membershipRole,
@@ -233,6 +240,7 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
       messages,
       muted: muteResult.rows.length > 0,
       mutedUntil: muteResult.rows[0]?.muted_until || null,
+      archived: archiveResult.rows.length > 0,
     });
   } catch (err) {
     console.error(err);

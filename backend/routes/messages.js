@@ -416,6 +416,12 @@ router.get("/with/:username", requireAuth, async (req, res) => {
     other.muted = muteResult.rows.length > 0;
     other.muted_until = muteResult.rows[0]?.muted_until || null;
 
+    const archiveResult = await pool.query(
+      "SELECT 1 FROM chat_archives WHERE user_id = $1 AND chat_kind = 'dm' AND chat_id = $2",
+      [req.user.id, other.id]
+    );
+    other.archived = archiveResult.rows.length > 0;
+
     const result = await pool.query(
       `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at,
               m.pinned_at, m.forwarded_from_username, m.voice_duration_seconds, m.video_duration_seconds,
@@ -427,11 +433,13 @@ router.get("/with/:username", requireAuth, async (req, res) => {
               s.user_id IS NOT NULL AS starred_by_me
        FROM messages m
        LEFT JOIN hidden_messages h ON h.message_kind = 'dm' AND h.message_id = m.id AND h.user_id = $1
+       LEFT JOIN chat_clears cc ON cc.user_id = $1 AND cc.chat_kind = 'dm' AND cc.chat_id = $2
        LEFT JOIN messages rq ON rq.id = m.reply_to_id
        LEFT JOIN users ru ON ru.id = rq.sender_id
        LEFT JOIN starred_messages s ON s.message_kind = 'dm' AND s.message_id = m.id AND s.user_id = $1
        WHERE ((m.sender_id = $1 AND m.receiver_id = $2) OR (m.sender_id = $2 AND m.receiver_id = $1))
          AND h.message_id IS NULL
+         AND m.created_at > COALESCE(cc.cleared_before, 'epoch')
        ORDER BY m.created_at ASC`,
       [req.user.id, other.id]
     );

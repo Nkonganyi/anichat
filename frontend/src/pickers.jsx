@@ -24,6 +24,60 @@ function formatLastSeen(iso) {
   return date.toLocaleDateString();
 }
 
+// Overflow menu for chat-level actions that don't warrant their own header
+// icon (unlike Mute, which is frequent enough to deserve a one-click
+// toggle). "Delete conversation" needs a real confirm step since it's
+// irreversible — rather than a native window.confirm() (which clashes with
+// the rest of this app's custom UI), clicking it once arms a "Click again
+// to confirm" state that quietly disarms itself after a few seconds or if
+// the menu closes.
+export function ChatOptionsMenu({ archived, onArchive, onUnarchive, onDeleteConversation }) {
+  const [open, setOpen] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  function close() {
+    setOpen(false);
+    setConfirmingDelete(false);
+  }
+
+  function handleDeleteClick() {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      setTimeout(() => setConfirmingDelete(false), 4000);
+      return;
+    }
+    onDeleteConversation();
+    close();
+  }
+
+  return (
+    <div className="chat-options-wrap">
+      <button
+        className="chat-options-btn"
+        onClick={() => (open ? close() : setOpen(true))}
+        title="Chat options"
+      >
+        ⋮
+      </button>
+      {open && (
+        <div className="popover chat-options-popover">
+          <button
+            onClick={() => {
+              archived ? onUnarchive() : onArchive();
+              close();
+            }}
+          >
+            {archived ? "📤 Unarchive chat" : "📥 Archive chat"}
+          </button>
+          <button className={confirmingDelete ? "danger confirming" : "danger"} onClick={handleDeleteClick}>
+            {confirmingDelete ? "Click again to confirm" : "🗑 Delete conversation"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Mute toggle + duration picker, shared between the DM header and group
 // header. Muting is purely a personal preference (no notification system
 // exists yet to actually gate — see README) but the state, the UI, and the

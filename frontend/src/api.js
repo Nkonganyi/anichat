@@ -228,8 +228,8 @@ export function stopPlayback(token, groupId) {
   });
 }
 
-export function getConversations(token) {
-  return request("/api/conversations", {
+export function getConversations(token, { archived = false } = {}) {
+  return request(`/api/conversations${archived ? "?archived=true" : ""}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 }
@@ -479,6 +479,52 @@ export function muteGroup(token, groupId, durationHours = null) {
 export function unmuteGroup(token, groupId) {
   return request(`/api/mutes/group/${groupId}`, {
     method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Archive — sticky/manual (see backend/db/schema.sql), toggled independently
+// per DM/group. `getConversations(token, { archived: true })` fetches the
+// archived list instead of the default (non-archived) one.
+export function archiveDm(token, username) {
+  return request(`/api/chats/dm/${encodeURIComponent(username)}/archive`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function unarchiveDm(token, username) {
+  return request(`/api/chats/dm/${encodeURIComponent(username)}/archive`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function archiveGroup(token, groupId) {
+  return request(`/api/chats/group/${groupId}/archive`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function unarchiveGroup(token, groupId) {
+  return request(`/api/chats/group/${groupId}/archive`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Delete conversation (clear-for-me) — one-way, no "undelete."
+export function clearDmConversation(token, username) {
+  return request(`/api/chats/dm/${encodeURIComponent(username)}/clear`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function clearGroupConversation(token, groupId) {
+  return request(`/api/chats/group/${groupId}/clear`, {
+    method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
 }

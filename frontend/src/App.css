@@ -944,6 +944,39 @@ input:focus {
   gap: 8px;
 }
 
+.inbox-view-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.inbox-view-toggle button {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--surface-light);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.inbox-view-toggle button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.inbox-unarchive-btn {
+  flex-shrink: 0;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.inbox-unarchive-btn:hover {
+  background: var(--surface-light);
+}
+
 .inbox-list {
   display: flex;
   flex-direction: column;
@@ -1372,6 +1405,67 @@ input:focus {
 .mute-duration-popover button:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.chat-options-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.chat-options-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+.chat-options-btn:hover {
+  color: var(--accent);
+}
+
+.chat-options-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: nowrap;
+  min-width: 180px;
+}
+
+.chat-options-popover button {
+  background: var(--surface);
+  border: 1px solid var(--surface-light);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 7px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-options-popover button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chat-options-popover button.danger {
+  color: var(--offline);
+}
+
+.chat-options-popover button.danger:hover {
+  border-color: var(--offline);
+}
+
+.chat-options-popover button.danger.confirming {
+  background: var(--offline);
+  color: #fff;
+  border-color: var(--offline);
 }
 
 .in-chat-search {

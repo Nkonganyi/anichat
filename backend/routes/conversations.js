@@ -10,6 +10,10 @@ router.get("/", requireAuth, async (req, res) => {
 
   try {
     // ---- DMs: last message per distinct conversation partner ----
+    // The LEFT JOIN against chat_clears means a "deleted" conversation with
+    // no messages since the clear point simply produces zero rows for that
+    // partner via the (inner) messages JOIN below — it just disappears
+    // until a new message arrives, no separate "hide this DM" flag needed.
     const dmLastMessages = await pool.query(
       `WITH dm_partners AS (
          SELECT DISTINCT CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END AS other_user_id
@@ -21,9 +25,11 @@ router.get("/", requireAuth, async (req, res) => {
          m.content, m.type, m.created_at, m.sender_id
        FROM dm_partners dp
        JOIN users u ON u.id = dp.other_user_id
+       LEFT JOIN chat_clears cc ON cc.user_id = $1 AND cc.chat_kind = 'dm' AND cc.chat_id = dp.other_user_id
        JOIN messages m ON
-         (m.sender_id = $1 AND m.receiver_id = dp.other_user_id) OR
-         (m.sender_id = dp.other_user_id AND m.receiver_id = $1)
+         ((m.sender_id = $1 AND m.receiver_id = dp.other_user_id) OR
+          (m.sender_id = dp.other_user_id AND m.receiver_id = $1))
+         AND m.created_at > COALESCE(cc.cleared_before, 'epoch')
        ORDER BY dp.other_user_id, m.created_at DESC`,
       [userId]
     );
@@ -41,13 +47,18 @@ router.get("/", requireAuth, async (req, res) => {
     const dmUnreadMap = new Map(dmUnread.rows.map((r) => [r.other_user_id, r.unread_count]));
 
     // ---- Groups: last message per group I'm in ----
+    // Unlike DMs (derived purely from message existence), group membership
+    // is a persistent thing — a cleared group stays in the list (you're
+    // still a member) but shows no last-message preview until a new one
+    // arrives after the clear point.
     const groupLastMessages = await pool.query(
       `SELECT DISTINCT ON (g.id)
          g.id AS group_id, g.name,
          gmsg.content, gmsg.type, gmsg.created_at, gmsg.sender_id, su.username AS sender_username
        FROM group_members gm
        JOIN groups g ON g.id = gm.group_id
-       LEFT JOIN group_messages gmsg ON gmsg.group_id = g.id
+       LEFT JOIN chat_clears cc ON cc.user_id = $1 AND cc.chat_kind = 'group' AND cc.chat_id = g.id
+       LEFT JOIN group_messages gmsg ON gmsg.group_id = g.id AND gmsg.created_at > COALESCE(cc.cleared_before, 'epoch')
        LEFT JOIN users su ON su.id = gmsg.sender_id
        WHERE gm.user_id = $1
        ORDER BY g.id, gmsg.created_at DESC NULLS LAST`,
@@ -74,6 +85,12 @@ router.get("/", requireAuth, async (req, res) => {
     );
     const muteMap = new Map(mutes.rows.map((r) => [`${r.chat_kind}:${r.chat_id}`, r.muted_until]));
 
+    // ---- Archives: same shape as mutes ----
+    const archives = await pool.query("SELECT chat_kind, chat_id, archived_at FROM chat_archives WHERE user_id = $1", [
+      userId,
+    ]);
+    const archiveMap = new Map(archives.rows.map((r) => [`${r.chat_kind}:${r.chat_id}`, r.archived_at]));
+
     const dmConversations = dmLastMessages.rows.map((row) => ({
       kind: "dm",
       id: row.other_user_id,
@@ -86,6 +103,7 @@ router.get("/", requireAuth, async (req, res) => {
       unreadCount: dmUnreadMap.get(row.other_user_id) || 0,
       muted: muteMap.has(`dm:${row.other_user_id}`),
       mutedUntil: muteMap.get(`dm:${row.other_user_id}`) || null,
+      archived: archiveMap.has(`dm:${row.other_user_id}`),
     }));
 
     const groupConversations = groupLastMessages.rows.map((row) => ({
@@ -99,9 +117,16 @@ router.get("/", requireAuth, async (req, res) => {
       unreadCount: groupUnreadMap.get(row.group_id) || 0,
       muted: muteMap.has(`group:${row.group_id}`),
       mutedUntil: muteMap.get(`group:${row.group_id}`) || null,
+      archived: archiveMap.has(`group:${row.group_id}`),
     }));
 
-    const conversations = [...dmConversations, ...groupConversations].sort((a, b) => {
+    // Default view excludes archived chats; ?archived=true flips it to show
+    // ONLY the archived ones, for a dedicated "Archived" list in the UI.
+    const wantArchived = req.query.archived === "true";
+    const filteredDm = dmConversations.filter((c) => c.archived === wantArchived);
+    const filteredGroups = groupConversations.filter((c) => c.archived === wantArchived);
+
+    const conversations = [...filteredDm, ...filteredGroups].sort((a, b) => {
       // Groups/DMs with no messages yet sort to the bottom (by null lastActivityAt)
       if (!a.lastActivityAt && !b.lastActivityAt) return 0;
       if (!a.lastActivityAt) return 1;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getConversations } from "./api";
+import { getConversations, unarchiveDm, unarchiveGroup } from "./api";
 import { AvatarBadge, PresenceLabel } from "./pickers";
 import { getAvatar } from "./constants";
 import { getVoice } from "./voices";
@@ -29,18 +29,20 @@ function previewText(lastMessage) {
 export function InboxPanel({ token, myTheme, socket, presence, onOpenConversation }) {
   const [conversations, setConversations] = useState(null);
   const [error, setError] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const voice = getVoice(myTheme);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await getConversations(token);
+      const data = await getConversations(token, { archived: showArchived });
       setConversations(data.conversations);
     } catch (err) {
       setError(err.message);
     }
-  }, [token]);
+  }, [token, showArchived]);
 
   useEffect(() => {
+    setConversations(null); // show "Loading…" while switching views, avoids a flash of the old list
     refresh();
   }, [refresh]);
 
@@ -60,11 +62,33 @@ export function InboxPanel({ token, myTheme, socket, presence, onOpenConversatio
     };
   }, [socket, refresh]);
 
+  async function handleUnarchive(e, c) {
+    e.stopPropagation(); // don't also open the conversation
+    try {
+      if (c.kind === "dm") await unarchiveDm(token, c.username);
+      else await unarchiveGroup(token, c.id);
+      refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="inbox-panel">
+      <div className="inbox-view-toggle">
+        <button className={!showArchived ? "active" : ""} onClick={() => setShowArchived(false)}>
+          Chats
+        </button>
+        <button className={showArchived ? "active" : ""} onClick={() => setShowArchived(true)}>
+          📥 Archived
+        </button>
+      </div>
+
       {error && <p className="error-text">{error}</p>}
       {conversations === null && <p className="muted center small-text">Loading…</p>}
-      {conversations?.length === 0 && <p className="muted center small-text">{voice.emptyConversations}</p>}
+      {conversations?.length === 0 && (
+        <p className="muted center small-text">{showArchived ? "No archived chats." : voice.emptyConversations}</p>
+      )}
 
       <div className="inbox-list">
         {conversations?.map((c) => {
@@ -95,6 +119,11 @@ export function InboxPanel({ token, myTheme, socket, presence, onOpenConversatio
                 </div>
                 {c.kind === "dm" && <PresenceLabel online={online} lastSeenAt={lastSeenAt} compact />}
               </div>
+              {showArchived && (
+                <span className="inbox-unarchive-btn" onClick={(e) => handleUnarchive(e, c)} title="Unarchive">
+                  📤
+                </span>
+              )}
             </button>
           );
         })}
@@ -102,3 +131,4 @@ export function InboxPanel({ token, myTheme, socket, presence, onOpenConversatio
     </div>
   );
 }
+

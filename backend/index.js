@@ -16,6 +16,7 @@ const playbackRoutes = require("./routes/playback");
 const conversationsRoutes = require("./routes/conversations");
 const starredRoutes = require("./routes/starred");
 const mutesRoutes = require("./routes/mutes");
+const chatsRoutes = require("./routes/chats");
 const pool = require("./db/pool");
 const { setIO, emitToUser } = require("./realtime");
 const presence = require("./presence");
@@ -51,6 +52,7 @@ app.use("/api/groups", playbackRoutes);
 app.use("/api/conversations", conversationsRoutes);
 app.use("/api/starred-messages", starredRoutes);
 app.use("/api/mutes", mutesRoutes);
+app.use("/api/chats", chatsRoutes);
 
 // Serves uploaded video/audio files directly, e.g. /uploads/posts/abc123.mp4
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));

@@ -47,6 +47,12 @@ import {
   unmuteDm,
   muteGroup,
   unmuteGroup,
+  archiveDm,
+  unarchiveDm,
+  archiveGroup,
+  unarchiveGroup,
+  clearDmConversation,
+  clearGroupConversation,
   BACKEND_URL,
 } from "./api";
 import { compressImageIfNeeded } from "./imageCompression";
@@ -75,6 +81,7 @@ import {
   PinnedBar,
   PresenceLabel,
   MuteButton,
+  ChatOptionsMenu,
 } from "./pickers";
 
 // Loaded once, covers every theme's font choices.
@@ -445,6 +452,41 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
     }
   }
 
+  async function handleArchiveChat() {
+    if (!activeChat) return;
+    try {
+      await archiveDm(token, activeChat.username);
+      setActiveChat((prev) => ({ ...prev, archived: true }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleUnarchiveChat() {
+    if (!activeChat) return;
+    try {
+      await unarchiveDm(token, activeChat.username);
+      setActiveChat((prev) => ({ ...prev, archived: false }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleDeleteConversation() {
+    if (!activeChat) return;
+    try {
+      await clearDmConversation(token, activeChat.username);
+      // Nothing left to look at — history is cleared and the conversation
+      // drops out of the inbox until a new message arrives, so send the
+      // person back to the "no chat open" state rather than showing an
+      // empty thread.
+      setActiveChat(null);
+      setMessages([]);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -552,6 +594,12 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
               mutedUntil={activeChat.muted_until}
               onMute={handleMuteChat}
               onUnmute={handleUnmuteChat}
+            />
+            <ChatOptionsMenu
+              archived={!!activeChat.archived}
+              onArchive={handleArchiveChat}
+              onUnarchive={handleUnarchiveChat}
+              onDeleteConversation={handleDeleteConversation}
             />
           </div>
 
@@ -973,6 +1021,39 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
     }
   }
 
+  async function handleArchiveGroup() {
+    if (!activeGroup) return;
+    try {
+      await archiveGroup(token, activeGroup.group.id);
+      setActiveGroup((prev) => ({ ...prev, archived: true }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleUnarchiveGroup() {
+    if (!activeGroup) return;
+    try {
+      await unarchiveGroup(token, activeGroup.group.id);
+      setActiveGroup((prev) => ({ ...prev, archived: false }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleDeleteGroupConversation() {
+    if (!activeGroup) return;
+    try {
+      await clearGroupConversation(token, activeGroup.group.id);
+      // Unlike a DM, the group itself doesn't disappear (you're still a
+      // member) — just its history, in your view only. Reflect that
+      // locally instead of closing the panel.
+      setActiveGroup((prev) => ({ ...prev, messages: [] }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -1262,6 +1343,12 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
                 mutedUntil={activeGroup.mutedUntil}
                 onMute={handleMuteGroup}
                 onUnmute={handleUnmuteGroup}
+              />
+              <ChatOptionsMenu
+                archived={!!activeGroup.archived}
+                onArchive={handleArchiveGroup}
+                onUnarchive={handleUnarchiveGroup}
+                onDeleteConversation={handleDeleteGroupConversation}
               />
             </div>
 

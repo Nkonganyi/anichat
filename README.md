@@ -1,42 +1,46 @@
-# AniChat — Milestone 19: Mute a Chat
+# AniChat — Milestone 20: Archive / Delete a Conversation
 
-First item tackled from the "Chat-level features" section. Mute is a
-per-user, per-chat preference — muting a DM or group only affects your own
-view of it, nobody else's — with an optional auto-expiring duration.
+Second and third items from the "Chat-level features" list, done together
+since they're both "clear a chat out of your own view" actions and share a
+lot of plumbing. Both are per-user — one person archiving or deleting a
+chat never affects what anyone else sees.
 
 ## What's new
 
-Every DM and group now has a 🔔/🔕 button in its header, next to the search
-icon. Click it and pick **8 hours**, **1 week**, or **Always**. Once muted,
-the button turns into a 🔕 you can click to unmute at any time, and hovering
-it shows exactly when the mute expires (or "Muted" if it's indefinite).
+**Archive** — a 🔔/📥-style toggle now lives in the chat-options menu (⋮,
+next to the mute button) in both DM and group headers. Archiving pulls a
+chat out of your main inbox list without touching anything else — no
+messages are deleted, nothing changes for the other person, and your
+unread count for that chat keeps working normally. The inbox now has a
+**Chats / 📥 Archived** switch at the top so you can browse (and unarchive)
+whatever you've tucked away.
 
-Muted chats also show a 🔕 next to their name in the inbox list, and their
-unread badge switches from the normal accent color to a muted grey — the
-count is still shown (you don't lose that information), it's just visually
-quieter.
+One deliberate design call worth flagging: **archiving is manual and
+sticky — a new incoming message does NOT automatically pull a chat back
+out of Archived.** I considered auto-unarchiving on new activity (that's
+what a lot of chat apps do), but AniChat still has no notification system
+of any kind, so there's no "you might miss something" risk that auto-
+unarchiving would be protecting against — an archived chat's unread count
+still increments normally, you just see it when you check Archived instead
+of Chats. Keeping it manual also meant not having to thread an unarchive
+call through every single message-send endpoint (there are a lot of them —
+text, stickers, voice, video notes, files, images…). If this stops feeling
+right once real notifications exist, it's a one-place change.
 
-Duration-based mutes actually expire on their own — no need to remember to
-unmute something you muted "for 8 hours." I verified this with a real
-36-second mute and confirmed it silently dropped off after the wait, not
-just that the logic looked right on paper.
+**Delete conversation** — also in the ⋮ menu, below Archive. Since this
+one's irreversible, it doesn't fire on the first click: clicking arms a
+"Click again to confirm" state for a few seconds, then fires on the second
+click (no jarring browser `confirm()` popup, consistent with the rest of
+the custom UI here). It clears your view of that conversation's history —
+**only yours**. The other person (or other group members) keep every
+message exactly as it was.
 
-## An honest scope note
-
-**There's no active notification system in AniChat yet** — no sound, no
-browser push, no in-app toast. Mute has nothing to actually *silence* right
-now, because nothing makes noise yet. What this milestone built is real:
-a persisted, auto-expiring, per-user mute preference with working UI in
-both the chat header and the inbox list — and it's the natural foundation
-for browser push notifications (still on the roadmap, unbuilt) to check
-before deciding whether to notify someone. I didn't want to quietly build a
-button that looks like it does more than it does, so: right now, muting a
-chat changes how it *looks*, not (yet) whether you'd hear about a new
-message some other way, because no other way exists yet.
+If you delete a DM and later get a new message from that person, only the
+new message shows — old history stays hidden. Same idea for groups, except
+a group never disappears from your list entirely (you're still a member of
+it), it just shows no message preview until something new comes in.
 
 ## Nothing new to set up
-
-Same database, same `.env`. Just the usual:
 
 ```
 cd backend
@@ -51,54 +55,62 @@ npm install
 npm run dev
 ```
 
-The migration adds one new table (`chat_mutes`). Nothing existing changes.
+Migration adds two tables (`chat_archives`, `chat_clears`). Nothing
+existing changes.
 
-## How I tested the backend
+## How I tested this
 
-Spun up a real Postgres instance and a live server (not just read through
-the code), then exercised it end to end:
+Same approach as the last few milestones — a real Postgres instance and a
+live server, not just reading through the code:
 
-- Muted a DM forever, confirmed it shows `muted: true` on both the
-  conversation-detail endpoint *and* the conversations list
-- Unmuted it, confirmed both endpoints flip back
-- Muted for a short duration, waited it out for real, confirmed it
-  auto-expired and both endpoints reflect that without any manual cleanup
-  step on my part
-- Confirmed you can't mute yourself, and muting a nonexistent username 404s
-- Muted a group as one member and confirmed a *different* member's view of
-  that same group is unaffected — mute is genuinely per-user, not group-wide
-- Confirmed a non-member gets a 403 trying to mute a group they're not in
+- Archived a DM → confirmed it vanished from the default `/api/conversations`
+  list, showed up under `?archived=true`, and the DM header reflected it
+- Unarchived it → confirmed everything flipped back
+- **The big one:** alice deleted her conversation with bob. Confirmed her
+  message count dropped to 0 and bob disappeared from her inbox — then
+  confirmed **bob's own view was completely unaffected** (still all 6
+  messages, still in his inbox). Then had bob send a new message and
+  confirmed alice saw *exactly* that one message (not the old history),
+  and bob reappeared in her inbox automatically — all without writing any
+  special "just arrived" logic; it fell straight out of the timestamp-
+  cutoff design.
+- Group version of the same test: bob cleared the group's history for
+  himself, carol's view of the same group was untouched, and the group
+  correctly stayed in bob's list (empty preview) rather than disappearing
+- Non-members correctly get a 403 trying to archive or clear a group they
+  aren't in
+- Full frontend build passes clean
 
-**What I couldn't test myself:** the actual button/popover feel in a real
-browser — does the duration popover position sensibly, does the 🔕 icon
-read clearly at inbox-row size, does the grey badge feel like "quieter"
-rather than "broken." That part is on you.
+**What I couldn't test myself:** the actual ⋮ menu in a browser — does the
+popover position well against both header layouts, does the "click again
+to confirm" state read clearly, does the Chats/Archived toggle feel snappy
+switching back and forth. Worth a manual pass.
 
 ## How to test it yourself
 
-1. Open a DM, click 🔔 in the header, pick "Mute 8 hours"
-2. Confirm the button becomes 🔕, and hovering it shows the expiry time
-3. Check the inbox — that conversation should now show a 🔕 next to its name
-4. Send yourself an unread message from another account, confirm the badge
-   shows in grey instead of the normal accent color
-5. Click 🔕 to unmute, confirm it goes back to 🔔 and the badge goes back to
-   its normal color
-6. Try the same in a group, and confirm muting it doesn't affect what other
-   members of that group see
+1. Open a DM, click ⋮ → Archive chat. Check the inbox — it should be gone
+   from Chats and show up under Archived
+2. From the Archived tab, click the 📤 next to it to unarchive — it should
+   come back to Chats
+3. Open a DM, click ⋮ → Delete conversation once (button should change to
+   "Click again to confirm"), then click it again — the thread should
+   clear and you'll land back on the "no chat open" screen
+4. Have the other account message you again — you should only see that new
+   message, not the old history
+5. Try the same delete flow inside a group — this time the group should
+   stay visible in your list (just with an empty preview) rather than
+   disappearing, since you're still a member
 
 ## What's intentionally *not* here yet
 
-- No actual notification suppression (see the scope note above — there's
-  nothing to suppress yet)
-- No "mute all" bulk action
-- No custom duration picker — just the three presets (8h / 1 week / always)
+- No auto-unarchive on new messages (see the design note above)
+- No "restore deleted conversation" — delete is one-way by design
+- No bulk archive/delete across multiple chats at once
 
 ## If something goes wrong
 
-- **Mute button does nothing** → check the backend terminal for the exact
-  error; also confirm the migration ran (`chat_mutes` table needs to exist)
-- **Badge doesn't turn grey** → hard-refresh; the inbox list only re-fetches
-  on certain socket events, so a stale mute state can linger until the next
-  natural refresh
-- Anything else → same as always, exact error text (or what you see) gets
-  you a fast fix
+- **Archive/delete does nothing** → check the backend terminal; also
+  confirm the migration ran (`chat_archives` and `chat_clears` need to exist)
+- **Deleted conversation still shows old messages** → hard refresh; if it
+  persists, check the backend log for a query error
+- Anything else → same as always, the exact error text gets you a fast fix

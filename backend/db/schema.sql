@@ -227,3 +227,30 @@ CREATE TABLE IF NOT EXISTS chat_mutes (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, chat_kind, chat_id)
 );
+
+-- AniChat schema — Milestone 20: archive & delete conversation (for me)
+-- Both mirror the chat_mutes pattern above — one row per (user, chat).
+--
+-- Archiving is a manual, sticky action: a new incoming message does NOT
+-- auto-unarchive a chat. That's a deliberate scope call, not an oversight —
+-- see the README for this milestone for the reasoning.
+CREATE TABLE IF NOT EXISTS chat_archives (
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  chat_kind    VARCHAR(8) NOT NULL,
+  chat_id      INTEGER NOT NULL,
+  archived_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, chat_kind, chat_id)
+);
+
+-- "Delete conversation" clears history from the requester's own view only —
+-- everything created at/before cleared_before is hidden for that user in
+-- that chat. Anything created after (including a message they themselves
+-- send next) shows up normally with no special-casing needed — the cutoff
+-- is just a timestamp, not a per-message flag like M11's hidden_messages.
+CREATE TABLE IF NOT EXISTS chat_clears (
+  user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  chat_kind      VARCHAR(8) NOT NULL,
+  chat_id        INTEGER NOT NULL,
+  cleared_before TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, chat_kind, chat_id)
+);
