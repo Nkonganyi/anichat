@@ -1,44 +1,34 @@
-# AniChat — Milestone 20: Archive / Delete a Conversation
+# AniChat — Milestone 26: Leave Group
 
-Second and third items from the "Chat-level features" list, done together
-since they're both "clear a chat out of your own view" actions and share a
-lot of plumbing. Both are per-user — one person archiving or deleting a
-chat never affects what anyone else sees.
+Fifth item from "Group improvements." Members could previously only be
+removed by an admin/owner (kicked) — now anyone can voluntarily leave a
+group themselves.
 
 ## What's new
 
-**Archive** — a 🔔/📥-style toggle now lives in the chat-options menu (⋮,
-next to the mute button) in both DM and group headers. Archiving pulls a
-chat out of your main inbox list without touching anything else — no
-messages are deleted, nothing changes for the other person, and your
-unread count for that chat keeps working normally. The inbox now has a
-**Chats / 📥 Archived** switch at the top so you can browse (and unarchive)
-whatever you've tucked away.
+⋮ menu → 🚪 Leave group, same two-step "click again to confirm" pattern as
+Delete conversation and Block user. Leaving:
 
-One deliberate design call worth flagging: **archiving is manual and
-sticky — a new incoming message does NOT automatically pull a chat back
-out of Archived.** I considered auto-unarchiving on new activity (that's
-what a lot of chat apps do), but AniChat still has no notification system
-of any kind, so there's no "you might miss something" risk that auto-
-unarchiving would be protecting against — an archived chat's unread count
-still increments normally, you just see it when you check Archived instead
-of Chats. Keeping it manual also meant not having to thread an unarchive
-call through every single message-send endpoint (there are a lot of them —
-text, stickers, voice, video notes, files, images…). If this stops feeling
-right once real notifications exist, it's a one-place change.
+- Removes you from the group immediately
+- Drops a system message ("bob left the group") for everyone still there,
+  live over the socket — same convention as every other membership event
+- Removes the group from your own sidebar and inbox
 
-**Delete conversation** — also in the ⋮ menu, below Archive. Since this
-one's irreversible, it doesn't fire on the first click: clicking arms a
-"Click again to confirm" state for a few seconds, then fires on the second
-click (no jarring browser `confirm()` popup, consistent with the rest of
-the custom UI here). It clears your view of that conversation's history —
-**only yours**. The other person (or other group members) keep every
-message exactly as it was.
+**The owner is a special case.** As owner, you can't leave while anyone
+else is still in the group — you'd be abandoning something you're
+responsible for with no one designated to take over. The one exception:
+if you're the **last** person left in the group, leaving deletes the whole
+group. There's nothing left to own at that point, so "leave" and "delete"
+collapse into the same action.
 
-If you delete a DM and later get a new message from that person, only the
-new message shows — old history stays hidden. Same idea for groups, except
-a group never disappears from your list entirely (you're still a member of
-it), it just shows no message preview until something new comes in.
+This is a deliberate, temporary limitation, not an oversight: the *real*
+answer for an owner who wants out while others remain is **transfer
+ownership first** — which is next on the roadmap, not yet built. Until
+then, an owner's only paths out of a group with other people still in it
+are transferring ownership (once that exists) or removing everyone else
+first via kick. I didn't want to build a half-answer here (like
+auto-promoting a random admin) when the real feature for this is coming
+right after.
 
 ## Nothing new to set up
 
@@ -55,62 +45,68 @@ npm install
 npm run dev
 ```
 
-Migration adds two tables (`chat_archives`, `chat_clears`). Nothing
-existing changes.
+No schema changes this time — leaving just deletes existing rows
+(`group_members`, and for the last-member case, the group itself). One
+cleanup detail: `chat_mutes`, `chat_archives`, and `chat_clears` don't have
+a direct foreign key to `groups` (they're polymorphic across DM/group), so
+when a group gets fully deleted, those get an explicit cleanup sweep in the
+same request rather than being silently orphaned.
 
 ## How I tested this
 
-Same approach as the last few milestones — a real Postgres instance and a
-live server, not just reading through the code:
+Real Postgres, live server, real HTTP requests:
 
-- Archived a DM → confirmed it vanished from the default `/api/conversations`
-  list, showed up under `?archived=true`, and the DM header reflected it
-- Unarchived it → confirmed everything flipped back
-- **The big one:** alice deleted her conversation with bob. Confirmed her
-  message count dropped to 0 and bob disappeared from her inbox — then
-  confirmed **bob's own view was completely unaffected** (still all 6
-  messages, still in his inbox). Then had bob send a new message and
-  confirmed alice saw *exactly* that one message (not the old history),
-  and bob reappeared in her inbox automatically — all without writing any
-  special "just arrived" logic; it fell straight out of the timestamp-
-  cutoff design.
-- Group version of the same test: bob cleared the group's history for
-  himself, carol's view of the same group was untouched, and the group
-  correctly stayed in bob's list (empty preview) rather than disappearing
-- Non-members correctly get a 403 trying to archive or clear a group they
-  aren't in
+- A regular member left a group with others still in it — confirmed they
+  were removed, a system message landed, and the group still exists fine
+  for everyone else
+- Confirmed the leaving member's own subsequent request to that group
+  correctly 403s ("not a member") — they're really out, not just hidden
+  from their own view
+- Confirmed an owner trying to leave *while others remain* gets a clear
+  403 with an explanation, not a silent no-op or a confusing error
+- Confirmed that once the owner is the *only* member left, leaving
+  succeeds and **actually deletes the group** — verified directly against
+  the database that `group_members`, `group_messages`, and the `groups`
+  row itself were all gone afterward, not just hidden
+- Ran the full owner-blocked → other-member-leaves → owner-now-alone →
+  owner-leaves-and-group-deletes sequence end to end in one flow, not just
+  each case in isolation
+- Re-ran the core scenario again on a fresh server boot of the finished code
 - Full frontend build passes clean
 
-**What I couldn't test myself:** the actual ⋮ menu in a browser — does the
-popover position well against both header layouts, does the "click again
-to confirm" state read clearly, does the Chats/Archived toggle feel snappy
-switching back and forth. Worth a manual pass.
+**What I couldn't test myself:** the actual ⋮ menu interaction in a
+browser, and specifically what it feels like to be a *different*, still-
+present member watching someone leave live (does the system message and
+member-list update land smoothly without a flicker or a stale roster).
+Worth a manual pass with two accounts open side by side.
 
 ## How to test it yourself
 
-1. Open a DM, click ⋮ → Archive chat. Check the inbox — it should be gone
-   from Chats and show up under Archived
-2. From the Archived tab, click the 📤 next to it to unarchive — it should
-   come back to Chats
-3. Open a DM, click ⋮ → Delete conversation once (button should change to
-   "Click again to confirm"), then click it again — the thread should
-   clear and you'll land back on the "no chat open" screen
-4. Have the other account message you again — you should only see that new
-   message, not the old history
-5. Try the same delete flow inside a group — this time the group should
-   stay visible in your list (just with an empty preview) rather than
-   disappearing, since you're still a member
+1. In a group where you're a regular member (not owner), click ⋮ → 🚪
+   Leave group (click twice to confirm)
+2. You should be dropped back to the inbox, and that group should no
+   longer be in your sidebar
+3. From another account still in that group, confirm you see a system
+   message and the member list update live
+4. As the owner of a group with other members, try to leave — you should
+   get a clear explanation of why you can't yet
+5. Remove/have everyone else leave until you're the only one left, then
+   leave yourself — the group should be gone entirely, not just empty
 
 ## What's intentionally *not* here yet
 
-- No auto-unarchive on new messages (see the design note above)
-- No "restore deleted conversation" — delete is one-way by design
-- No bulk archive/delete across multiple chats at once
+- No ownership transfer (the real fix for "owner wants to leave but others
+  remain") — that's the next milestone
+- No "leave and delete all my messages" combo — leaving doesn't touch
+  your message history, same as kicking doesn't either
+- No confirmation dialog beyond the two-click pattern (no "are you sure"
+  modal with additional warnings)
 
 ## If something goes wrong
 
-- **Archive/delete does nothing** → check the backend terminal; also
-  confirm the migration ran (`chat_archives` and `chat_clears` need to exist)
-- **Deleted conversation still shows old messages** → hard refresh; if it
-  persists, check the backend log for a query error
-- Anything else → same as always, the exact error text gets you a fast fix
+- **Leave button does nothing** → check the backend terminal for the
+  actual error
+- **Owner can't leave even when alone** → double check via the group's
+  member list that you're genuinely the only one — a stale cached member
+  list client-side could make it look that way when you're not
+- Anything else → same as always, exact error text gets you a fast fix

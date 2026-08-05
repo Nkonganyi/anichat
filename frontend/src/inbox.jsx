@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getConversations, unarchiveDm, unarchiveGroup } from "./api";
-import { AvatarBadge, PresenceLabel } from "./pickers";
+import { AvatarBadge, PresenceLabel, GroupIconBadge } from "./pickers";
 import { getAvatar } from "./constants";
 import { getVoice } from "./voices";
 
@@ -103,7 +103,7 @@ export function InboxPanel({ token, myTheme, socket, presence, onOpenConversatio
                   {online && <span className="inbox-online-dot" title="Online" />}
                 </span>
               ) : (
-                <span className="inbox-group-icon">👥</span>
+                <GroupIconBadge iconPath={c.iconPath} size={36} canEdit={false} />
               )}
               <div className="inbox-row-main">
                 <div className="inbox-row-top">
@@ -113,6 +113,7 @@ export function InboxPanel({ token, myTheme, socket, presence, onOpenConversatio
                 </div>
                 <div className="inbox-row-bottom">
                   <span className="inbox-row-preview">{previewText(c.lastMessage)}</span>
+                  {c.mentionCount > 0 && <span className="inbox-mention-badge" title="You were mentioned">@</span>}
                   {c.unreadCount > 0 && (
                     <span className={`inbox-unread-badge ${c.muted ? "muted" : ""}`}>{c.unreadCount}</span>
                   )}

@@ -53,6 +53,17 @@ import {
   unarchiveGroup,
   clearDmConversation,
   clearGroupConversation,
+  blockUser,
+  unblockUser,
+  updateGroupDescription,
+  uploadGroupIcon,
+  removeGroupIcon,
+  createGroupInvite,
+  listGroupInvites,
+  revokeGroupInvite,
+  previewInvite,
+  joinViaInvite,
+  leaveGroup,
   BACKEND_URL,
 } from "./api";
 import { compressImageIfNeeded } from "./imageCompression";
@@ -82,6 +93,11 @@ import {
   PresenceLabel,
   MuteButton,
   ChatOptionsMenu,
+  BlockedBanner,
+  GroupDescriptionBar,
+  GroupIconBadge,
+  InviteLinkPanel,
+  MentionAutocomplete,
 } from "./pickers";
 
 // Loaded once, covers every theme's font choices.
@@ -94,6 +110,72 @@ function useThemeFonts() {
     document.head.appendChild(link);
     return () => document.head.removeChild(link);
   }, []);
+}
+
+// Landing experience for /invite/:token URLs — shown as an overlay once
+// the person is logged in (App() holds onto the token through the login
+// screen if they weren't already authed, then MainShell renders this once
+// a session exists). Fetches a preview before committing to anything, so
+// nobody joins a group blind.
+function InviteJoinScreen({ token, inviteToken, onJoined, onDismiss }) {
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState("");
+  const [joining, setJoining] = useState(false);
+
+  useEffect(() => {
+    previewInvite(token, inviteToken)
+      .then(setPreview)
+      .catch((err) => setError(err.message));
+  }, [token, inviteToken]);
+
+  async function handleJoin() {
+    setJoining(true);
+    try {
+      const result = await joinViaInvite(token, inviteToken);
+      onJoined(result.group);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setJoining(false);
+    }
+  }
+
+  return (
+    <div className="invite-join-overlay">
+      <div className="invite-join-card">
+        {error && <p className="error-text">{error}</p>}
+        {!preview && !error && <p className="muted">Loading invite…</p>}
+        {preview && (
+          <>
+            <GroupIconBadge iconPath={preview.group.icon_path} size={64} canEdit={false} />
+            <h3>{preview.group.name}</h3>
+            {preview.group.description && <p className="muted small-text">{preview.group.description}</p>}
+            <p className="muted small-text">
+              {preview.group.memberCount} member{preview.group.memberCount === 1 ? "" : "s"}
+            </p>
+            {preview.alreadyMember ? (
+              <button className="primary-btn" onClick={handleJoin}>
+                Open group
+              </button>
+            ) : preview.valid ? (
+              <button className="primary-btn" onClick={handleJoin} disabled={joining}>
+                {joining ? "Joining…" : "Join group"}
+              </button>
+            ) : (
+              <p className="error-text">
+                {preview.reason === "expired" && "This invite link has expired."}
+                {preview.reason === "revoked" && "This invite link has been revoked."}
+                {preview.reason === "exhausted" && "This invite link has reached its use limit."}
+              </p>
+            )}
+            <button className="invite-join-cancel" onClick={onDismiss}>
+              Cancel
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function AuthScreen({ onAuthed }) {
@@ -487,6 +569,26 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
     }
   }
 
+  async function handleBlockUser() {
+    if (!activeChat) return;
+    try {
+      await blockUser(token, activeChat.username);
+      setActiveChat((prev) => ({ ...prev, blockedByMe: true }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleUnblockUser() {
+    if (!activeChat) return;
+    try {
+      await unblockUser(token, activeChat.username);
+      setActiveChat((prev) => ({ ...prev, blockedByMe: false }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -600,6 +702,9 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
               onArchive={handleArchiveChat}
               onUnarchive={handleUnarchiveChat}
               onDeleteConversation={handleDeleteConversation}
+              blockedByMe={!!activeChat.blockedByMe}
+              onBlock={handleBlockUser}
+              onUnblock={handleUnblockUser}
             />
           </div>
 
@@ -707,6 +812,14 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
             </div>
           )}
 
+          {(activeChat.blockedByMe || activeChat.blockedMe) ? (
+            <BlockedBanner
+              blockedByMe={activeChat.blockedByMe}
+              blockedMe={activeChat.blockedMe}
+              onUnblock={handleUnblockUser}
+            />
+          ) : (
+          <>
           <div className="composer-toolbar">
             <button type="button" className="toolbar-btn" onClick={() => setOpenPicker(openPicker === "sticker" ? null : "sticker")}>
               🌟
@@ -793,6 +906,8 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
               </button>
             </form>
           )}
+          </>
+          )}
         </>
         );
       })()}
@@ -800,7 +915,7 @@ function DMPanel({ token, myUserId, socket, openTarget, myTheme, presence }) {
   );
 }
 
-function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
+function GroupsPanel({ token, myUserId, myUsername, socket, myTheme, openTarget }) {
   const [groups, setGroups] = useState([]);
   const [newGroupName, setNewGroupName] = useState("");
   const [activeGroup, setActiveGroup] = useState(null); // { group, myRole, members, messages }
@@ -828,6 +943,8 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
   const videoPreviewRef = useRef(null);
   const fileInputRef = useRef(null);
   const [fileError, setFileError] = useState("");
+  const groupDraftInputRef = useRef(null);
+  const [mentionQuery, setMentionQuery] = useState(null); // null = autocomplete closed, else the "@partial" text typed so far
 
   async function refreshGroupList() {
     try {
@@ -903,6 +1020,16 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
   function handleDraftChange(e) {
     const value = e.target.value;
     setDraft(value);
+
+    // Look for an "@partial" token that runs right up to the cursor — not
+    // anywhere in the text, specifically where the person is currently
+    // typing, so autocomplete doesn't reopen for an @mention earlier in
+    // the message while they're editing something else.
+    const cursor = e.target.selectionStart;
+    const textBeforeCursor = value.slice(0, cursor);
+    const match = textBeforeCursor.match(/(?:^|\s)@([a-zA-Z0-9_]*)$/);
+    setMentionQuery(match ? match[1] : null);
+
     if (!socket || !activeGroup) return;
     const now = Date.now();
     if (!isTypingRef.current || now - lastTypingEmitRef.current > 2000) {
@@ -912,6 +1039,29 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
     }
     clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(stopTypingSignal, 3000);
+  }
+
+  function handleSelectMention(username) {
+    const input = groupDraftInputRef.current;
+    const cursor = input ? input.selectionStart : draft.length;
+    const textBeforeCursor = draft.slice(0, cursor);
+    const textAfterCursor = draft.slice(cursor);
+    const newBefore = textBeforeCursor.replace(/(?:^|\s)@([a-zA-Z0-9_]*)$/, (whole, _partial, offset) => {
+      const leadingSpace = whole.startsWith(" ") ? " " : "";
+      return `${leadingSpace}@${username} `;
+    });
+    const newDraft = newBefore + textAfterCursor;
+    setDraft(newDraft);
+    setMentionQuery(null);
+    // Put the cursor right after the inserted "@username " and refocus,
+    // so typing can continue seamlessly instead of leaving focus stuck
+    // on the autocomplete button that was just clicked.
+    requestAnimationFrame(() => {
+      if (!input) return;
+      input.focus();
+      const newCursorPos = newBefore.length;
+      input.setSelectionRange(newCursorPos, newCursorPos);
+    });
   }
 
   async function send(content, type = "text") {
@@ -1054,6 +1204,89 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
     }
   }
 
+  async function handleUpdateGroupDescription(description) {
+    if (!activeGroup) return;
+    try {
+      const result = await updateGroupDescription(token, activeGroup.group.id, description);
+      setActiveGroup((prev) => ({ ...prev, group: { ...prev.group, description: result.description } }));
+    } catch (err) {
+      setError(err.message);
+      throw err; // let GroupDescriptionBar know the save failed, so it keeps the edit form open
+    }
+  }
+
+  async function handleUploadGroupIcon(file) {
+    if (!activeGroup) return;
+    try {
+      const result = await uploadGroupIcon(token, activeGroup.group.id, file);
+      setActiveGroup((prev) => ({ ...prev, group: { ...prev.group, icon_path: result.iconPath } }));
+      setGroups((prev) => prev.map((g) => (g.id === activeGroup.group.id ? { ...g, icon_path: result.iconPath } : g)));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleRemoveGroupIcon() {
+    if (!activeGroup) return;
+    try {
+      await removeGroupIcon(token, activeGroup.group.id);
+      setActiveGroup((prev) => ({ ...prev, group: { ...prev.group, icon_path: null } }));
+      setGroups((prev) => prev.map((g) => (g.id === activeGroup.group.id ? { ...g, icon_path: null } : g)));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  const [inviteLinkPanelOpen, setInviteLinkPanelOpen] = useState(false);
+  const [invites, setInvites] = useState([]);
+
+  async function handleOpenInviteLinks() {
+    if (!activeGroup) return;
+    try {
+      const data = await listGroupInvites(token, activeGroup.group.id);
+      setInvites(data.invites);
+      setInviteLinkPanelOpen(true);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleCreateInvite(opts) {
+    if (!activeGroup) return;
+    try {
+      const invite = await createGroupInvite(token, activeGroup.group.id, opts);
+      setInvites((prev) => [{ ...invite, isExpired: false, isExhausted: false }, ...prev]);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleRevokeInvite(inviteToken) {
+    if (!activeGroup) return;
+    try {
+      await revokeGroupInvite(token, activeGroup.group.id, inviteToken);
+      setInvites((prev) => prev.filter((i) => i.token !== inviteToken));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleLeaveGroup() {
+    if (!activeGroup) return;
+    const groupId = activeGroup.group.id;
+    try {
+      await leaveGroup(token, groupId);
+      // Whether the group got deleted (last member) or just lost a member
+      // (me), either way it's no longer something I'm part of — drop it
+      // from the sidebar and close the view, same as it'd disappear from
+      // the inbox on next load.
+      setGroups((prev) => prev.filter((g) => g.id !== groupId));
+      setActiveGroup(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function handleReact(messageId, emoji) {
     setReactionPickerFor(null);
     try {
@@ -1157,7 +1390,7 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
           : [...prev.messages, evt.message];
 
         let members = prev.members;
-        if (evt.type === "member_kicked") {
+        if (evt.type === "member_kicked" || evt.type === "member_left") {
           members = members.filter((m) => m.username !== evt.targetUsername);
         }
         return { ...prev, messages, members };
@@ -1188,7 +1421,7 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
         return {
           ...prev,
           messages: prev.messages.map((m) =>
-            m.id === evt.messageId ? { ...m, content: evt.content, edited_at: evt.editedAt } : m
+            m.id === evt.messageId ? { ...m, content: evt.content, edited_at: evt.editedAt, mentions: evt.mentions } : m
           ),
         };
       });
@@ -1229,6 +1462,25 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
       });
     }
 
+    function handleDescriptionChanged(evt) {
+      if (evt.groupId !== activeGroupIdRef.current) return;
+      setActiveGroup((prev) => {
+        if (!prev) return prev;
+        return { ...prev, group: { ...prev.group, description: evt.description } };
+      });
+    }
+
+    function handleIconChanged(evt) {
+      if (evt.groupId === activeGroupIdRef.current) {
+        setActiveGroup((prev) => {
+          if (!prev) return prev;
+          return { ...prev, group: { ...prev.group, icon_path: evt.iconPath } };
+        });
+      }
+      // Also patch the sidebar list, not just the currently-open group.
+      setGroups((prev) => prev.map((g) => (g.id === evt.groupId ? { ...g, icon_path: evt.iconPath } : g)));
+    }
+
     function handleGroupPinned(evt) {
       if (evt.groupId !== activeGroupIdRef.current) return;
       setActiveGroup((prev) => {
@@ -1258,6 +1510,8 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
     socket.on("group_message:deleted", handleGroupDeleted);
     socket.on("group_message:reaction", handleGroupReaction);
     socket.on("group:role_changed", handleRoleChanged);
+    socket.on("group:description_changed", handleDescriptionChanged);
+    socket.on("group:icon_changed", handleIconChanged);
     socket.on("group_message:pinned", handleGroupPinned);
     socket.on("group_message:unpinned", handleGroupUnpinned);
     return () => {
@@ -1268,6 +1522,8 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
       socket.off("group_message:deleted", handleGroupDeleted);
       socket.off("group_message:reaction", handleGroupReaction);
       socket.off("group:role_changed", handleRoleChanged);
+      socket.off("group:description_changed", handleDescriptionChanged);
+      socket.off("group:icon_changed", handleIconChanged);
       socket.off("group_message:pinned", handleGroupPinned);
       socket.off("group_message:unpinned", handleGroupUnpinned);
     };
@@ -1320,7 +1576,8 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
               className={`group-list-item ${activeGroup?.group.id === g.id ? "active" : ""}`}
               onClick={() => openGroup(g.id)}
             >
-              <span>{g.name}</span>
+              <GroupIconBadge iconPath={g.icon_path} size={24} canEdit={false} />
+              <span className="group-list-item-name">{g.name}</span>
               {g.role !== "member" && <span className="role-badge">{g.role}</span>}
             </button>
           ))}
@@ -1333,8 +1590,16 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
 
         {activeGroup ? (
           <>
-            <div className="conversation-title">
-              {activeGroup.group.name} · {activeGroup.members.length} members
+            <div className="conversation-title with-avatar">
+              <GroupIconBadge
+                iconPath={activeGroup.group.icon_path}
+                size={28}
+                canEdit={activeGroup.myRole === "owner" || activeGroup.myRole === "admin"}
+                onUpload={handleUploadGroupIcon}
+              />
+              <span>
+                {activeGroup.group.name} · {activeGroup.members.length} members
+              </span>
               <button className="search-toggle-btn" onClick={() => setSearchOpen((v) => !v)} title="Search in this group">
                 🔍
               </button>
@@ -1349,8 +1614,29 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
                 onArchive={handleArchiveGroup}
                 onUnarchive={handleUnarchiveGroup}
                 onDeleteConversation={handleDeleteGroupConversation}
+                hasGroupIcon={!!activeGroup.group.icon_path}
+                onRemoveGroupIcon={handleRemoveGroupIcon}
+                onOpenInviteLinks={
+                  activeGroup.myRole === "owner" || activeGroup.myRole === "admin" ? handleOpenInviteLinks : undefined
+                }
+                onLeaveGroup={handleLeaveGroup}
               />
             </div>
+
+            {inviteLinkPanelOpen && (
+              <InviteLinkPanel
+                invites={invites}
+                onCreate={handleCreateInvite}
+                onRevoke={handleRevokeInvite}
+                onClose={() => setInviteLinkPanelOpen(false)}
+              />
+            )}
+
+            <GroupDescriptionBar
+              description={activeGroup.group.description}
+              canEdit={activeGroup.myRole === "owner" || activeGroup.myRole === "admin"}
+              onSave={handleUpdateGroupDescription}
+            />
 
             {searchOpen && (
               <input
@@ -1432,7 +1718,7 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
                       ) : (
                         <div>
                           {m.sender_id !== myUserId && <div className="sender-label">{m.sender_username}</div>}
-                          <MessageContent message={m} mine={m.sender_id === myUserId} />
+                          <MessageContent message={m} mine={m.sender_id === myUserId} myUsername={myUsername} />
                           <ReactionBar reactions={m.reactions} myUserId={myUserId} onToggle={(emoji) => handleReact(m.id, emoji)} />
                           {reactionPickerFor === m.id && (
                             <ReactionPicker onPick={(emoji) => handleReact(m.id, emoji)} onClose={() => setReactionPickerFor(null)} />
@@ -1573,7 +1859,15 @@ function GroupsPanel({ token, myUserId, socket, myTheme, openTarget }) {
               </div>
             ) : (
               <form className="send-row" onSubmit={handleSend}>
+                {mentionQuery !== null && (
+                  <MentionAutocomplete
+                    query={mentionQuery}
+                    members={activeGroup.members}
+                    onSelect={handleSelectMention}
+                  />
+                )}
                 <input
+                  ref={groupDraftInputRef}
                   placeholder={`Message ${activeGroup.group.name}…`}
                   value={draft}
                   onChange={handleDraftChange}
@@ -1880,7 +2174,18 @@ function StarredPanel({ token, onOpenConversation }) {
   );
 }
 
-function MainShell({ token, myUserId, myUsername, myAvatar, myTheme, onAvatarChange, onThemeChange, onLogout }) {
+function MainShell({
+  token,
+  myUserId,
+  myUsername,
+  myAvatar,
+  myTheme,
+  onAvatarChange,
+  onThemeChange,
+  onLogout,
+  pendingInviteToken,
+  onInviteConsumed,
+}) {
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState("inbox"); // "inbox" | "dm" | "groups" | "profile"
   const [openTarget, setOpenTarget] = useState(null); // { type: "dm", username } | { type: "group", groupId }
@@ -1951,6 +2256,17 @@ function MainShell({ token, myUserId, myUsername, myAvatar, myTheme, onAvatarCha
 
   return (
     <div className="chat-shell wide">
+      {pendingInviteToken && (
+        <InviteJoinScreen
+          token={token}
+          inviteToken={pendingInviteToken}
+          onJoined={(group) => {
+            handleOpenConversation({ kind: "group", id: group.id });
+            onInviteConsumed();
+          }}
+          onDismiss={onInviteConsumed}
+        />
+      )}
       <AmbientMotif theme={theme} />
       <div className="chat-header">
         <div className="header-left">
@@ -2007,7 +2323,7 @@ function MainShell({ token, myUserId, myUsername, myAvatar, myTheme, onAvatarCha
         <DMPanel token={token} myUserId={myUserId} socket={socket} openTarget={openTarget} myTheme={myTheme} presence={presence} />
       )}
       {tab === "groups" && (
-        <GroupsPanel token={token} myUserId={myUserId} socket={socket} openTarget={openTarget} myTheme={myTheme} />
+        <GroupsPanel token={token} myUserId={myUserId} myUsername={myUsername} socket={socket} openTarget={openTarget} myTheme={myTheme} />
       )}
       {tab === "profile" && <ProfilePanel token={token} myUsername={myUsername} />}
       {tab === "starred" && <StarredPanel token={token} onOpenConversation={handleOpenConversation} />}
@@ -2022,6 +2338,24 @@ function App() {
     const saved = localStorage.getItem("anichat_session");
     return saved ? JSON.parse(saved) : null;
   });
+
+  // /invite/:token deep links — captured once on load and cleaned from the
+  // URL immediately (so a refresh doesn't re-trigger it and it doesn't
+  // linger as a distinct browser-history entry). Held here rather than in
+  // MainShell so it survives the AuthScreen if the person isn't logged in
+  // yet — they log in first, then land on the invite.
+  const [inviteToken] = useState(() => {
+    const match = window.location.pathname.match(/^\/invite\/([a-f0-9]+)\/?$/);
+    return match ? match[1] : null;
+  });
+  const [pendingInvite, setPendingInvite] = useState(inviteToken);
+
+  useEffect(() => {
+    if (inviteToken) {
+      window.history.replaceState({}, "", "/");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleAuthed(token, user) {
     const s = { token, userId: user.id, username: user.username, avatar: user.avatar, theme: user.theme };
@@ -2062,6 +2396,8 @@ function App() {
           onAvatarChange={handleAvatarChange}
           onThemeChange={handleThemeChange}
           onLogout={handleLogout}
+          pendingInviteToken={pendingInvite}
+          onInviteConsumed={() => setPendingInvite(null)}
         />
       ) : (
         <AuthScreen onAuthed={handleAuthed} />

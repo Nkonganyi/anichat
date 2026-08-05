@@ -53,7 +53,7 @@ router.get("/", requireAuth, async (req, res) => {
     // arrives after the clear point.
     const groupLastMessages = await pool.query(
       `SELECT DISTINCT ON (g.id)
-         g.id AS group_id, g.name,
+         g.id AS group_id, g.name, g.icon_path,
          gmsg.content, gmsg.type, gmsg.created_at, gmsg.sender_id, su.username AS sender_username
        FROM group_members gm
        JOIN groups g ON g.id = gm.group_id
@@ -78,6 +78,21 @@ router.get("/", requireAuth, async (req, res) => {
     );
     const groupUnreadMap = new Map(groupUnread.rows.map((r) => [r.group_id, r.unread_count]));
 
+    // ---- Unread @mentions per group: same "since my last read marker"
+    // math as unread counts above, just scoped to messages that actually
+    // mention me specifically ----
+    const groupMentions = await pool.query(
+      `SELECT gmsg.group_id, COUNT(*)::int AS mention_count
+       FROM group_message_mentions gmm
+       JOIN group_messages gmsg ON gmsg.id = gmm.message_id
+       LEFT JOIN conversation_reads cr
+         ON cr.user_id = $1 AND cr.conversation_type = 'group' AND cr.conversation_id = gmsg.group_id
+       WHERE gmm.user_id = $1 AND gmsg.created_at > COALESCE(cr.last_read_at, 'epoch')
+       GROUP BY gmsg.group_id`,
+      [userId]
+    );
+    const groupMentionMap = new Map(groupMentions.rows.map((r) => [r.group_id, r.mention_count]));
+
     // ---- Mutes: one query covers both DM and group mutes for this user ----
     const mutes = await pool.query(
       "SELECT chat_kind, chat_id, muted_until FROM chat_mutes WHERE user_id = $1 AND (muted_until IS NULL OR muted_until > now())",
@@ -90,6 +105,16 @@ router.get("/", requireAuth, async (req, res) => {
       userId,
     ]);
     const archiveMap = new Map(archives.rows.map((r) => [`${r.chat_kind}:${r.chat_id}`, r.archived_at]));
+
+    // ---- Blocks: DM-only, both directions matter for the UI (blocked
+    // someone vs. been blocked by them read differently even though
+    // messaging is closed either way) ----
+    const blocks = await pool.query(
+      "SELECT blocker_id, blocked_id FROM user_blocks WHERE blocker_id = $1 OR blocked_id = $1",
+      [userId]
+    );
+    const blockedByMeSet = new Set(blocks.rows.filter((r) => r.blocker_id === userId).map((r) => r.blocked_id));
+    const blockedMeSet = new Set(blocks.rows.filter((r) => r.blocked_id === userId).map((r) => r.blocker_id));
 
     const dmConversations = dmLastMessages.rows.map((row) => ({
       kind: "dm",
@@ -104,17 +129,21 @@ router.get("/", requireAuth, async (req, res) => {
       muted: muteMap.has(`dm:${row.other_user_id}`),
       mutedUntil: muteMap.get(`dm:${row.other_user_id}`) || null,
       archived: archiveMap.has(`dm:${row.other_user_id}`),
+      blockedByMe: blockedByMeSet.has(row.other_user_id),
+      blockedMe: blockedMeSet.has(row.other_user_id),
     }));
 
     const groupConversations = groupLastMessages.rows.map((row) => ({
       kind: "group",
       id: row.group_id,
       name: row.name,
+      iconPath: row.icon_path,
       lastMessage: row.content
         ? { content: row.content, type: row.type, senderUsername: row.sender_username }
         : null,
       lastActivityAt: row.created_at,
       unreadCount: groupUnreadMap.get(row.group_id) || 0,
+      mentionCount: groupMentionMap.get(row.group_id) || 0,
       muted: muteMap.has(`group:${row.group_id}`),
       mutedUntil: muteMap.get(`group:${row.group_id}`) || null,
       archived: archiveMap.has(`group:${row.group_id}`),

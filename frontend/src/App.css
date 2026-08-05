@@ -1468,6 +1468,369 @@ input:focus {
   border-color: var(--offline);
 }
 
+.blocked-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--offline);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.blocked-banner button {
+  background: none;
+  border: 1px solid var(--offline);
+  border-radius: 8px;
+  color: var(--offline);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 10px;
+  flex-shrink: 0;
+}
+
+.blocked-banner button:hover {
+  background: var(--offline);
+  color: #fff;
+}
+
+.group-description-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 2px 2px;
+  border-bottom: 1px solid var(--surface-light);
+  margin-bottom: 4px;
+}
+
+.group-description-bar.editable {
+  cursor: pointer;
+}
+
+.group-description-bar.editable:hover {
+  color: var(--text);
+}
+
+.group-description-text {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.group-description-placeholder {
+  flex: 1;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.group-description-edit-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.group-description-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--surface-light);
+  margin-bottom: 4px;
+}
+
+.group-description-edit textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-size: 11px;
+  font-family: inherit;
+  background: var(--surface);
+  border: 1px solid var(--surface-light);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 8px;
+}
+
+.group-description-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.group-description-counter {
+  font-size: 9px;
+  color: var(--muted);
+  margin-right: auto;
+}
+
+.group-description-edit-row button:not(.primary-btn) {
+  background: none;
+  border: 1px solid var(--surface-light);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 4px 8px;
+}
+
+.group-icon-badge {
+  position: relative;
+  flex-shrink: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-2);
+}
+
+.group-icon-badge.editable {
+  cursor: pointer;
+}
+
+.group-icon-badge.editable:hover {
+  filter: brightness(1.15);
+}
+
+.group-icon-badge img {
+  object-fit: cover;
+  display: block;
+}
+
+.group-icon-fallback {
+  line-height: 1;
+}
+
+.group-icon-uploading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 12px;
+}
+
+.group-list-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- invite link management panel ---- */
+.invite-link-panel {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.invite-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.invite-panel-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.invite-create-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.invite-create-row select {
+  flex: 1;
+  min-width: 110px;
+  font-size: 11px;
+  background: var(--surface);
+  border: 1px solid var(--surface-light);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 5px 6px;
+}
+
+.invite-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--surface-light);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.invite-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.invite-row-meta {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.invite-row button {
+  background: none;
+  border: 1px solid var(--surface-light);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 4px 7px;
+  flex-shrink: 0;
+}
+
+.invite-row button.danger {
+  color: var(--offline);
+  border-color: var(--offline);
+}
+
+/* ---- invite join landing screen ---- */
+.invite-join-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.invite-join-card {
+  background: var(--bg-2);
+  border: 1px solid var(--surface-light);
+  border-radius: 16px;
+  padding: 24px;
+  width: 300px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.invite-join-card h3 {
+  margin: 4px 0 0;
+  font-family: var(--font-display);
+}
+
+.invite-join-card .primary-btn {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.invite-join-cancel {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* ---- @mention autocomplete ---- */
+.send-row {
+  position: relative;
+}
+
+.mention-autocomplete {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--surface-light);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 6;
+}
+
+.mention-autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.mention-autocomplete-item:hover {
+  background: var(--surface-light);
+}
+
+.mention-autocomplete-role {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+/* ---- @mention highlighting inside a sent message ---- */
+.mention-highlight {
+  color: var(--accent);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-radius: 4px;
+  padding: 0 2px;
+}
+
+.bubble.mentions-me {
+  border: 1px solid var(--accent);
+}
+
+/* ---- unread-mentions badge in the inbox (distinct from unread count) ---- */
+.inbox-mention-badge {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 999px;
+  width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
 .in-chat-search {
   margin-bottom: 0;
   font-size: 12px;

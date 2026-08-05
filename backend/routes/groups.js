@@ -3,11 +3,13 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const { v4: uuidv4 } = require("uuid");
+const crypto = require("crypto");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { requireMembership, requireAdmin } = require("../middleware/groupAuth");
 const { emitToGroup, emitToUser, joinUserToGroupRoom, removeUserFromGroupRoom } = require("../realtime");
 const { resolveMediaFields } = require("../lib/mediaProcessing");
+const { syncMentions } = require("../mentions");
 
 const router = express.Router();
 
@@ -88,6 +90,28 @@ const uploadFile = multer({
   limits: { fileSize: MAX_FILE_SIZE },
 });
 
+// ---- Group icon upload (Milestone 23) ----
+const sharp = require("sharp");
+const ICON_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "group-icons");
+fs.mkdirSync(ICON_UPLOAD_DIR, { recursive: true });
+const MAX_ICON_SIZE = 5 * 1024 * 1024; // raw upload cap, before it gets cropped down
+const ICON_DIMENSION = 256;
+
+const iconStorage = multer.memoryStorage(); // small + always re-encoded, no need to touch disk for the raw upload
+
+function iconFileFilter(req, file, cb) {
+  if (!file.mimetype.startsWith("image/")) {
+    return cb(new Error("group icon must be an image"));
+  }
+  cb(null, true);
+}
+
+const uploadIcon = multer({
+  storage: iconStorage,
+  fileFilter: iconFileFilter,
+  limits: { fileSize: MAX_ICON_SIZE },
+});
+
 // Create a group — creator automatically becomes owner
 router.post("/", requireAuth, async (req, res) => {
   const { name } = req.body;
@@ -125,7 +149,7 @@ router.post("/", requireAuth, async (req, res) => {
 router.get("/", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT g.id, g.name, g.created_at, gm.role
+      `SELECT g.id, g.name, g.icon_path, g.created_at, gm.role
        FROM groups g
        JOIN group_members gm ON gm.group_id = g.id
        WHERE gm.user_id = $1
@@ -219,9 +243,25 @@ router.get("/:groupId", requireAuth, requireMembership, async (req, res) => {
       for (const m of messages) {
         m.reactions = reactionsByMessage.get(m.id) || [];
       }
+
+      const mentionsResult = await pool.query(
+        `SELECT gmm.message_id, u.username
+         FROM group_message_mentions gmm
+         JOIN users u ON u.id = gmm.user_id
+         WHERE gmm.message_id = ANY($1::int[])`,
+        [messages.map((m) => m.id)]
+      );
+      const mentionsByMessage = new Map();
+      for (const r of mentionsResult.rows) {
+        if (!mentionsByMessage.has(r.message_id)) mentionsByMessage.set(r.message_id, []);
+        mentionsByMessage.get(r.message_id).push(r.username);
+      }
+      for (const m of messages) {
+        m.mentions = mentionsByMessage.get(m.id) || [];
+      }
     }
 
-    const groupResult = await pool.query("SELECT id, name, created_at FROM groups WHERE id = $1", [req.groupId]);
+    const groupResult = await pool.query("SELECT id, name, description, icon_path, created_at FROM groups WHERE id = $1", [req.groupId]);
 
     const muteResult = await pool.query(
       "SELECT muted_until FROM chat_mutes WHERE user_id = $1 AND chat_kind = 'group' AND chat_id = $2 AND (muted_until IS NULL OR muted_until > now())",
@@ -286,7 +326,12 @@ router.post("/:groupId/messages", requireAuth, requireMembership, async (req, re
        RETURNING id, sender_id, type, content, reply_to_id, created_at`,
       [req.groupId, req.user.id, type, content.trim(), replyTo?.id || null]
     );
-    const message = { ...result.rows[0], sender_username: req.user.username, group_id: req.groupId, replyTo };
+
+    // Only plain text messages carry @mentions — stickers/gifs/etc. have no
+    // free text to parse them out of.
+    const mentions = type === "text" ? await syncMentions(result.rows[0].id, req.groupId, content.trim()) : [];
+
+    const message = { ...result.rows[0], sender_username: req.user.username, group_id: req.groupId, replyTo, mentions };
 
     emitToGroup(req.groupId, "group_message:new", message);
 
@@ -459,11 +504,16 @@ router.patch("/:groupId/messages/:messageId", requireAuth, requireMembership, as
       [content.trim(), messageId]
     );
 
+    // Editing can add, remove, or change @handles — resync rather than
+    // leave stale mention records from the original text.
+    const mentions = await syncMentions(messageId, req.groupId, result.rows[0].content);
+
     const payload = {
       groupId: req.groupId,
       messageId,
       content: result.rows[0].content,
       editedAt: result.rows[0].edited_at,
+      mentions,
     };
     emitToGroup(req.groupId, "group_message:edited", payload);
 
@@ -715,6 +765,218 @@ router.post("/:groupId/messages/:messageId/star", requireAuth, requireMembership
   }
 });
 
+// Update the group description/topic — admin/owner only, visible to all
+// members. Same permission level as kicking a member (requireAdmin), not
+// owner-only like role changes — this is much lower-stakes.
+router.patch("/:groupId/description", requireAuth, requireMembership, requireAdmin, async (req, res) => {
+  const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
+  if (description.length > 500) {
+    return res.status(400).json({ error: "description can't be longer than 500 characters" });
+  }
+
+  try {
+    await pool.query("UPDATE groups SET description = $1 WHERE id = $2", [description || null, req.groupId]);
+
+    const sysMsgResult = await pool.query(
+      `INSERT INTO group_messages (group_id, sender_id, type, content, meta)
+       VALUES ($1, $2, 'system', $3, $4)
+       RETURNING id, sender_id, type, content, meta, created_at`,
+      [
+        req.groupId,
+        req.user.id,
+        description
+          ? `${req.user.username} updated the group description`
+          : `${req.user.username} removed the group description`,
+        JSON.stringify({ eventType: "description_updated", actorUsername: req.user.username }),
+      ]
+    );
+
+    emitToGroup(req.groupId, "group:event", {
+      type: "description_updated",
+      groupId: req.groupId,
+      actorUsername: req.user.username,
+      message: sysMsgResult.rows[0],
+    });
+    emitToGroup(req.groupId, "group:description_changed", { groupId: req.groupId, description: description || null });
+
+    res.json({ description: description || null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't update the group description" });
+  }
+});
+
+// Upload/replace the group icon — admin/owner only, same permission level
+// as the description above. Always cropped to a fixed square (cover fit,
+// not "fit inside" — an icon should fill its circle, not letterbox) so
+// every group icon renders consistently regardless of the source image's
+// aspect ratio.
+router.post("/:groupId/icon", requireAuth, requireMembership, requireAdmin, (req, res) => {
+  uploadIcon.single("file")(req, res, async (err) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "icon image is too large — max 5MB" });
+    }
+    if (err) return res.status(400).json({ error: err.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "an image is required (field name: 'file')" });
+
+    try {
+      const filename = `${uuidv4()}.jpg`;
+      const outPath = path.join(ICON_UPLOAD_DIR, filename);
+      await sharp(req.file.buffer, { failOn: "none" })
+        .rotate()
+        .resize({ width: ICON_DIMENSION, height: ICON_DIMENSION, fit: "cover" })
+        .jpeg({ quality: 85 })
+        .toFile(outPath);
+
+      const relativePath = `group-icons/${filename}`;
+
+      const prevResult = await pool.query("SELECT icon_path FROM groups WHERE id = $1", [req.groupId]);
+      const prevIconPath = prevResult.rows[0]?.icon_path;
+
+      await pool.query("UPDATE groups SET icon_path = $1 WHERE id = $2", [relativePath, req.groupId]);
+
+      // Clean up the old icon file now that it's been replaced — no reason
+      // to keep accumulating orphaned images every time someone changes it.
+      if (prevIconPath) {
+        fs.unlink(path.join(__dirname, "..", "uploads", prevIconPath), () => {});
+      }
+
+      const sysMsgResult = await pool.query(
+        `INSERT INTO group_messages (group_id, sender_id, type, content, meta)
+         VALUES ($1, $2, 'system', $3, $4)
+         RETURNING id, sender_id, type, content, meta, created_at`,
+        [
+          req.groupId,
+          req.user.id,
+          `${req.user.username} changed the group icon`,
+          JSON.stringify({ eventType: "icon_changed", actorUsername: req.user.username }),
+        ]
+      );
+
+      emitToGroup(req.groupId, "group:event", {
+        type: "icon_changed",
+        groupId: req.groupId,
+        actorUsername: req.user.username,
+        message: sysMsgResult.rows[0],
+      });
+      emitToGroup(req.groupId, "group:icon_changed", { groupId: req.groupId, iconPath: relativePath });
+
+      res.json({ iconPath: relativePath });
+    } catch (procErr) {
+      console.error(procErr);
+      res.status(500).json({ error: "couldn't process that image" });
+    }
+  });
+});
+
+router.delete("/:groupId/icon", requireAuth, requireMembership, requireAdmin, async (req, res) => {
+  try {
+    const prevResult = await pool.query("SELECT icon_path FROM groups WHERE id = $1", [req.groupId]);
+    const prevIconPath = prevResult.rows[0]?.icon_path;
+    if (!prevIconPath) return res.json({ iconPath: null }); // already default, nothing to do
+
+    await pool.query("UPDATE groups SET icon_path = NULL WHERE id = $1", [req.groupId]);
+    fs.unlink(path.join(__dirname, "..", "uploads", prevIconPath), () => {});
+
+    const sysMsgResult = await pool.query(
+      `INSERT INTO group_messages (group_id, sender_id, type, content, meta)
+       VALUES ($1, $2, 'system', $3, $4)
+       RETURNING id, sender_id, type, content, meta, created_at`,
+      [
+        req.groupId,
+        req.user.id,
+        `${req.user.username} removed the group icon`,
+        JSON.stringify({ eventType: "icon_changed", actorUsername: req.user.username }),
+      ]
+    );
+
+    emitToGroup(req.groupId, "group:event", {
+      type: "icon_changed",
+      groupId: req.groupId,
+      actorUsername: req.user.username,
+      message: sysMsgResult.rows[0],
+    });
+    emitToGroup(req.groupId, "group:icon_changed", { groupId: req.groupId, iconPath: null });
+
+    res.json({ iconPath: null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't remove the group icon" });
+  }
+});
+
+// ---- Invite links (Milestone 24) ----
+// Management endpoints (create/list/revoke) are admin/owner only and live
+// here, group-scoped. The public-facing preview + join endpoints
+// (anyone with a valid token, not gated by group membership) live in
+// routes/invites.js at /api/invites/:token — see that file for why they're
+// split out.
+
+router.post("/:groupId/invites", requireAuth, requireMembership, requireAdmin, async (req, res) => {
+  const { expiresInHours, maxUses } = req.body;
+
+  if (expiresInHours != null && (typeof expiresInHours !== "number" || expiresInHours <= 0)) {
+    return res.status(400).json({ error: "expiresInHours must be a positive number" });
+  }
+  if (maxUses != null && (!Number.isInteger(maxUses) || maxUses <= 0)) {
+    return res.status(400).json({ error: "maxUses must be a positive integer" });
+  }
+
+  try {
+    const token = crypto.randomBytes(16).toString("hex");
+    const result = await pool.query(
+      `INSERT INTO group_invites (group_id, token, created_by, expires_at, max_uses)
+       VALUES ($1, $2, $3, ${expiresInHours != null ? "now() + ($4 * INTERVAL '1 hour')" : "NULL"}, $${expiresInHours != null ? 5 : 4})
+       RETURNING id, token, created_at, expires_at, max_uses, use_count`,
+      expiresInHours != null ? [req.groupId, token, req.user.id, expiresInHours, maxUses] : [req.groupId, token, req.user.id, maxUses]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't create an invite link" });
+  }
+});
+
+// List active (not revoked, not expired, not exhausted) invites, plus
+// enough state for the UI to show "expired"/"exhausted" tags on ones that
+// technically still exist but can't be used anymore.
+router.get("/:groupId/invites", requireAuth, requireMembership, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, token, created_at, expires_at, max_uses, use_count, revoked_at
+       FROM group_invites
+       WHERE group_id = $1 AND revoked_at IS NULL
+       ORDER BY created_at DESC`,
+      [req.groupId]
+    );
+    const invites = result.rows.map((row) => ({
+      ...row,
+      isExpired: row.expires_at ? new Date(row.expires_at) < new Date() : false,
+      isExhausted: row.max_uses != null ? row.use_count >= row.max_uses : false,
+    }));
+    res.json({ invites });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't load invite links" });
+  }
+});
+
+router.delete("/:groupId/invites/:token", requireAuth, requireMembership, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE group_invites SET revoked_at = now() WHERE group_id = $1 AND token = $2 AND revoked_at IS NULL RETURNING id",
+      [req.groupId, req.params.token]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "invite link not found (or already revoked)" });
+    }
+    res.json({ revoked: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't revoke that invite link" });
+  }
+});
+
 // Change a member's role — owner only. This is what was actually missing
 // since Milestone 4: not just a UI button, the capability itself never
 // existed anywhere in the API before now.
@@ -890,6 +1152,70 @@ router.delete("/:groupId/members/:username", requireAuth, requireMembership, req
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "couldn't remove that member" });
+  }
+});
+
+// Leave a group voluntarily — anyone can leave except the owner (unless
+// they're the last one left, in which case leaving deletes the group
+// entirely, since there's nothing left to own). An owner who wants to
+// leave while others remain needs to transfer ownership first — not yet
+// built (it's the next milestone), so for now the only way out as owner
+// with people still in the group is removing everyone else first.
+router.delete("/:groupId/leave", requireAuth, requireMembership, async (req, res) => {
+  try {
+    if (req.membershipRole === "owner") {
+      const memberCountResult = await pool.query("SELECT COUNT(*) FROM group_members WHERE group_id = $1", [
+        req.groupId,
+      ]);
+      const memberCount = parseInt(memberCountResult.rows[0].count, 10);
+
+      if (memberCount > 1) {
+        return res.status(403).json({
+          error: "as the owner, you can't leave while others are still in the group — transfer ownership or remove everyone else first",
+        });
+      }
+
+      // Last one out — delete the group entirely. group_messages,
+      // group_members, and group_invites all cascade automatically via
+      // their FK constraints; chat_mutes/chat_archives/chat_clears don't
+      // (they're polymorphic across dm/group, so no direct FK to clean
+      // up after), so those get an explicit sweep here.
+      await pool.query("DELETE FROM chat_mutes WHERE chat_kind = 'group' AND chat_id = $1", [req.groupId]);
+      await pool.query("DELETE FROM chat_archives WHERE chat_kind = 'group' AND chat_id = $1", [req.groupId]);
+      await pool.query("DELETE FROM chat_clears WHERE chat_kind = 'group' AND chat_id = $1", [req.groupId]);
+      await pool.query("DELETE FROM groups WHERE id = $1", [req.groupId]);
+
+      await removeUserFromGroupRoom(req.user.id, req.groupId);
+      return res.json({ left: true, groupDeleted: true });
+    }
+
+    await pool.query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2", [req.groupId, req.user.id]);
+
+    const sysMsgResult = await pool.query(
+      `INSERT INTO group_messages (group_id, sender_id, type, content, meta)
+       VALUES ($1, $2, 'system', $3, $4)
+       RETURNING id, sender_id, type, content, meta, created_at`,
+      [
+        req.groupId,
+        req.user.id,
+        `${req.user.username} left the group`,
+        JSON.stringify({ eventType: "member_left", targetUsername: req.user.username }),
+      ]
+    );
+
+    emitToGroup(req.groupId, "group:event", {
+      type: "member_left",
+      groupId: req.groupId,
+      targetUsername: req.user.username,
+      message: sysMsgResult.rows[0],
+    });
+
+    await removeUserFromGroupRoom(req.user.id, req.groupId);
+
+    res.json({ left: true, groupDeleted: false });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "couldn't leave that group" });
   }
 });
 

@@ -8,6 +8,7 @@ const { requireAuth } = require("../middleware/auth");
 const { emitToUser, emitToUserWithAck, emitToGroup } = require("../realtime");
 const { resolveMediaFields } = require("../lib/mediaProcessing");
 const presence = require("../presence");
+const { isBlockedEitherWay, getBlockStatus } = require("../blocks");
 
 const router = express.Router();
 
@@ -113,6 +114,9 @@ router.post("/", requireAuth, async (req, res) => {
     if (receiver.id === req.user.id) {
       return res.status(400).json({ error: "you can't message yourself" });
     }
+    if (await isBlockedEitherWay(req.user.id, receiver.id)) {
+      return res.status(403).json({ error: "messaging is blocked between you and this user" });
+    }
 
     let replyTo = null;
     if (replyToId) {
@@ -201,6 +205,10 @@ router.post("/voice", requireAuth, (req, res) => {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({ error: "you can't message yourself" });
       }
+      if (await isBlockedEitherWay(req.user.id, receiver.id)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(403).json({ error: "messaging is blocked between you and this user" });
+      }
 
       let validReplyToId = null;
       if (replyToId) {
@@ -269,6 +277,10 @@ router.post("/video-note", requireAuth, (req, res) => {
       if (receiver.id === req.user.id) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({ error: "you can't message yourself" });
+      }
+      if (await isBlockedEitherWay(req.user.id, receiver.id)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(403).json({ error: "messaging is blocked between you and this user" });
       }
 
       let validReplyToId = null;
@@ -339,6 +351,10 @@ router.post("/file", requireAuth, (req, res) => {
       if (receiver.id === req.user.id) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({ error: "you can't message yourself" });
+      }
+      if (await isBlockedEitherWay(req.user.id, receiver.id)) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(403).json({ error: "messaging is blocked between you and this user" });
       }
 
       let validReplyToId = null;
@@ -421,6 +437,10 @@ router.get("/with/:username", requireAuth, async (req, res) => {
       [req.user.id, other.id]
     );
     other.archived = archiveResult.rows.length > 0;
+
+    const blockStatus = await getBlockStatus(req.user.id, other.id);
+    other.blockedByMe = blockStatus.blockedByMe;
+    other.blockedMe = blockStatus.blockedMe;
 
     const result = await pool.query(
       `SELECT m.id, m.sender_id, m.receiver_id, m.type, m.edited_at, m.deleted_at, m.delivered_at,
@@ -712,6 +732,9 @@ router.post("/:messageId/forward", requireAuth, async (req, res) => {
       const receiver = receiverResult.rows[0];
       if (!receiver) return res.status(404).json({ error: `no user named '${toUsername}'` });
       if (receiver.id === req.user.id) return res.status(400).json({ error: "you can't message yourself" });
+      if (await isBlockedEitherWay(req.user.id, receiver.id)) {
+        return res.status(403).json({ error: "messaging is blocked between you and this user" });
+      }
 
       const result = await pool.query(
         `INSERT INTO messages (sender_id, receiver_id, content, type, forwarded_from_username, file_name, file_size_bytes, thumbnail_path, video_duration_seconds)

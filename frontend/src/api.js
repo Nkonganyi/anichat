@@ -528,3 +528,98 @@ export function clearGroupConversation(token, groupId) {
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+// Block a user — DM-only, closes messaging in both directions while active.
+export function blockUser(token, username) {
+  return request(`/api/blocks/${encodeURIComponent(username)}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function unblockUser(token, username) {
+  return request(`/api/blocks/${encodeURIComponent(username)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getBlockedUsers(token) {
+  return request("/api/blocks", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Group description/topic — admin/owner only to write, visible to everyone.
+export function updateGroupDescription(token, groupId, description) {
+  return request(`/api/groups/${groupId}/description`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ description }),
+  });
+}
+
+// Group icon — admin/owner only. Always cropped to a square server-side,
+// so no client-side cropping UI is needed here.
+export async function uploadGroupIcon(token, groupId, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${BACKEND_URL}/api/groups/${groupId}/icon`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "couldn't upload that icon");
+  return data;
+}
+
+export function removeGroupIcon(token, groupId) {
+  return request(`/api/groups/${groupId}/icon`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Invite links — admin/owner manage them per-group; anyone with a valid
+// token can preview/join regardless of group membership (that's the point).
+export function createGroupInvite(token, groupId, { expiresInHours, maxUses } = {}) {
+  return request(`/api/groups/${groupId}/invites`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ expiresInHours, maxUses }),
+  });
+}
+
+export function listGroupInvites(token, groupId) {
+  return request(`/api/groups/${groupId}/invites`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function revokeGroupInvite(token, groupId, inviteToken) {
+  return request(`/api/groups/${groupId}/invites/${inviteToken}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function previewInvite(token, inviteToken) {
+  return request(`/api/invites/${inviteToken}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function joinViaInvite(token, inviteToken) {
+  return request(`/api/invites/${inviteToken}/join`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function leaveGroup(token, groupId) {
+  return request(`/api/groups/${groupId}/leave`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}

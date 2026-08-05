@@ -254,3 +254,57 @@ CREATE TABLE IF NOT EXISTS chat_clears (
   cleared_before TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, chat_kind, chat_id)
 );
+
+-- AniChat schema — Milestone 21: block a user
+-- Directional record (blocker_id blocked blocked_id), but the *effect* is
+-- symmetric while it exists: neither side can message the other. Scoped to
+-- DMs only — groups aren't affected (see README for this milestone), so a
+-- blocked user can still be a co-member of a shared group.
+CREATE TABLE IF NOT EXISTS user_blocks (
+  blocker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (blocker_id, blocked_id)
+);
+
+-- AniChat schema — Milestone 22: group description/topic
+-- A blurb visible to all members, editable by admins/owner only.
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS description TEXT;
+
+-- AniChat schema — Milestone 23: group icon upload
+-- NULL means "show the default 👥 emoji" (existing fallback everywhere
+-- a group icon renders). Editable by admins/owner only, same as the
+-- description above.
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS icon_path TEXT;
+
+-- AniChat schema — Milestone 24: invite links
+-- A group can have several active invite links at once (each with its own
+-- optional expiry / use-cap), same as Discord/Slack — not just one link
+-- that gets regenerated. Revocation is soft (revoked_at set, row kept)
+-- so admins can see a history of what they've created, not just what's
+-- currently live.
+CREATE TABLE IF NOT EXISTS group_invites (
+  id          SERIAL PRIMARY KEY,
+  group_id    INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  token       VARCHAR(64) NOT NULL UNIQUE,
+  created_by  INTEGER NOT NULL REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ,       -- NULL = never expires
+  max_uses    INTEGER,           -- NULL = unlimited uses
+  use_count   INTEGER NOT NULL DEFAULT 0,
+  revoked_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_group_invites_group_id ON group_invites(group_id);
+
+-- AniChat schema — Milestone 25: @mentions
+-- Only real, current group members can be mentioned — "@foo" in a message
+-- only creates a row here if foo is actually in that group at send time.
+-- Junction table (not a JSON array column) so unread-mentions counts can
+-- be computed with a normal JOIN, same as everything else in this app
+-- that needs "unread since my last read marker" math.
+CREATE TABLE IF NOT EXISTS group_message_mentions (
+  message_id INTEGER NOT NULL REFERENCES group_messages(id) ON DELETE CASCADE,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_message_mentions_user ON group_message_mentions(user_id);

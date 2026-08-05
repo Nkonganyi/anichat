@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { AVATAR_OPTIONS, STICKERS, QUICK_EMOJI } from "./constants";
+import { AVATAR_OPTIONS, STICKERS, QUICK_EMOJI, getAvatar } from "./constants";
 import { THEME_OPTIONS } from "./themes";
 import { searchGifs, BACKEND_URL } from "./api";
 
@@ -31,13 +31,279 @@ function formatLastSeen(iso) {
 // the rest of this app's custom UI), clicking it once arms a "Click again
 // to confirm" state that quietly disarms itself after a few seconds or if
 // the menu closes.
-export function ChatOptionsMenu({ archived, onArchive, onUnarchive, onDeleteConversation }) {
+// Replaces the message composer when either side has blocked the other.
+// Deliberately doesn't say WHO blocked whom when they blocked you (no need
+// to advertise that), but does say so when it's your own block, since you're
+// the one who can undo it.
+export function BlockedBanner({ blockedByMe, blockedMe, onUnblock }) {
+  if (blockedByMe) {
+    return (
+      <div className="blocked-banner">
+        <span>You've blocked this user. They can't message you, and you can't message them.</span>
+        <button onClick={onUnblock}>Unblock</button>
+      </div>
+    );
+  }
+  if (blockedMe) {
+    return (
+      <div className="blocked-banner">
+        <span>You can't send messages in this conversation.</span>
+      </div>
+    );
+  }
+  return null;
+}
+
+// @mention autocomplete dropdown — appears above the group message input
+// while typing "@partial". Only ever offers real group members (matches
+// what the backend will actually turn into a mention record), so there's
+// no risk of it suggesting someone whose @mention wouldn't even count.
+export function MentionAutocomplete({ query, members, onSelect }) {
+  const matches = members
+    .filter((m) => m.username.toLowerCase().startsWith(query.toLowerCase()))
+    .slice(0, 6);
+
+  if (matches.length === 0) return null;
+
+  return (
+    <div className="mention-autocomplete">
+      {matches.map((m) => (
+        <button type="button" key={m.username} className="mention-autocomplete-item" onClick={() => onSelect(m.username)}>
+          <AvatarBadge avatar={getAvatar(m.avatar)} size={20} />
+          <span>{m.username}</span>
+          {m.role !== "member" && <span className="mention-autocomplete-role">{m.role}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Invite link management — create/list/revoke, for admins/owner. Opened
+// from the ⋮ menu, rendered as its own popover (not nested inside
+// ChatOptionsMenu's popover, to avoid popover-in-popover awkwardness).
+export function InviteLinkPanel({ invites, onCreate, onRevoke, onClose }) {
+  const [expiryChoice, setExpiryChoice] = useState("never");
+  const [usesChoice, setUsesChoice] = useState("unlimited");
+  const [creating, setCreating] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(null);
+
+  async function handleCreate() {
+    setCreating(true);
+    try {
+      const expiresInHours = expiryChoice === "24h" ? 24 : expiryChoice === "7d" ? 24 * 7 : null;
+      const maxUses = usesChoice === "unlimited" ? null : parseInt(usesChoice, 10);
+      await onCreate({ expiresInHours, maxUses });
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function handleCopy(inviteToken) {
+    const url = `${window.location.origin}/invite/${inviteToken}`;
+    navigator.clipboard
+      .writeText(url)
+      .then(() => {
+        setCopiedToken(inviteToken);
+        setTimeout(() => setCopiedToken(null), 2000);
+      })
+      .catch(() => {}); // clipboard access can be denied — the link is still visible/selectable either way
+  }
+
+  return (
+    <div className="popover invite-link-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="invite-panel-header">
+        <span>Invite links</span>
+        <button type="button" className="invite-panel-close" onClick={onClose}>
+          ✕
+        </button>
+      </div>
+
+      <div className="invite-create-row">
+        <select value={expiryChoice} onChange={(e) => setExpiryChoice(e.target.value)}>
+          <option value="never">Never expires</option>
+          <option value="24h">Expires in 24h</option>
+          <option value="7d">Expires in 7 days</option>
+        </select>
+        <select value={usesChoice} onChange={(e) => setUsesChoice(e.target.value)}>
+          <option value="unlimited">Unlimited uses</option>
+          <option value="1">1 use</option>
+          <option value="10">10 uses</option>
+        </select>
+        <button type="button" className="primary-btn small" onClick={handleCreate} disabled={creating}>
+          {creating ? "…" : "Create"}
+        </button>
+      </div>
+
+      <div className="invite-list">
+        {invites.length === 0 && <p className="muted small-text">No active invite links yet.</p>}
+        {invites.map((inv) => (
+          <div key={inv.token} className="invite-row">
+            <div className="invite-row-info">
+              <span className="invite-row-meta">
+                {inv.max_uses ? `${inv.use_count}/${inv.max_uses} uses` : `${inv.use_count} uses`}
+                {inv.expires_at && ` · expires ${new Date(inv.expires_at).toLocaleDateString()}`}
+                {inv.isExpired && " · expired"}
+                {inv.isExhausted && " · exhausted"}
+              </span>
+            </div>
+            <button type="button" onClick={() => handleCopy(inv.token)}>
+              {copiedToken === inv.token ? "Copied!" : "Copy"}
+            </button>
+            <button type="button" className="danger" onClick={() => onRevoke(inv.token)}>
+              Revoke
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Group icon — a custom square image if one's been set, otherwise the
+// default 👥. Clickable (admins/owner only) to open a file picker; the
+// actual square-cropping happens server-side (see backend/routes/groups.js),
+// so there's no client-side crop UI to build here.
+export function GroupIconBadge({ iconPath, size = 40, canEdit, onUpload }) {
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      await onUpload(file);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <span
+      className={`group-icon-badge ${canEdit ? "editable" : ""}`}
+      style={{ width: size, height: size }}
+      onClick={canEdit ? () => fileInputRef.current?.click() : undefined}
+      title={canEdit ? "Change group icon" : undefined}
+    >
+      {iconPath ? (
+        <img src={`${BACKEND_URL}/uploads/${iconPath}`} alt="" style={{ width: size, height: size }} />
+      ) : (
+        <span className="group-icon-fallback" style={{ fontSize: size * 0.5 }}>
+          👥
+        </span>
+      )}
+      {uploading && <span className="group-icon-uploading">…</span>}
+      {canEdit && (
+        <input type="file" ref={fileInputRef} accept="image/*" style={{ display: "none" }} onChange={handleFileChange} />
+      )}
+    </span>
+  );
+}
+
+// Group description/topic — a blurb visible to all members, editable inline
+// by admins/owner. Click-to-edit rather than a separate settings page,
+// since it's small enough not to need its own screen.
+export function GroupDescriptionBar({ description, canEdit, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(description || "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(description || "");
+  }, [description]);
+
+  if (editing) {
+    return (
+      <div className="group-description-edit">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          maxLength={500}
+          placeholder="What's this group about?"
+          rows={2}
+          autoFocus
+        />
+        <div className="group-description-edit-row">
+          <span className="group-description-counter">{draft.length}/500</span>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(description || "");
+              setEditing(false);
+            }}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-btn small"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                await onSave(draft.trim());
+                setEditing(false);
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!description && !canEdit) return null; // nothing to show, no permission to add one
+
+  return (
+    <div className={`group-description-bar ${canEdit ? "editable" : ""}`} onClick={canEdit ? () => setEditing(true) : undefined}>
+      {description ? (
+        <span className="group-description-text">{description}</span>
+      ) : (
+        <span className="group-description-placeholder">Add a group description…</span>
+      )}
+      {canEdit && <span className="group-description-edit-icon">✏️</span>}
+    </div>
+  );
+}
+
+export function ChatOptionsMenu({
+  archived,
+  onArchive,
+  onUnarchive,
+  onDeleteConversation,
+  blockedByMe,
+  onBlock,
+  onUnblock,
+  hasGroupIcon,
+  onRemoveGroupIcon,
+  onOpenInviteLinks,
+  onLeaveGroup,
+}) {
   const [open, setOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingBlock, setConfirmingBlock] = useState(false);
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
 
   function close() {
     setOpen(false);
     setConfirmingDelete(false);
+    setConfirmingBlock(false);
+    setConfirmingLeave(false);
+  }
+
+  function handleLeaveClick() {
+    if (!confirmingLeave) {
+      setConfirmingLeave(true);
+      setTimeout(() => setConfirmingLeave(false), 4000);
+      return;
+    }
+    onLeaveGroup();
+    close();
   }
 
   function handleDeleteClick() {
@@ -47,6 +313,21 @@ export function ChatOptionsMenu({ archived, onArchive, onUnarchive, onDeleteConv
       return;
     }
     onDeleteConversation();
+    close();
+  }
+
+  function handleBlockClick() {
+    if (blockedByMe) {
+      onUnblock();
+      close();
+      return;
+    }
+    if (!confirmingBlock) {
+      setConfirmingBlock(true);
+      setTimeout(() => setConfirmingBlock(false), 4000);
+      return;
+    }
+    onBlock();
     close();
   }
 
@@ -69,6 +350,40 @@ export function ChatOptionsMenu({ archived, onArchive, onUnarchive, onDeleteConv
           >
             {archived ? "📤 Unarchive chat" : "📥 Archive chat"}
           </button>
+          {/* onRemoveGroupIcon is only passed in for groups that currently have a custom icon */}
+          {onRemoveGroupIcon && hasGroupIcon && (
+            <button
+              onClick={() => {
+                onRemoveGroupIcon();
+                close();
+              }}
+            >
+              🖼️ Remove group icon
+            </button>
+          )}
+          {/* onOpenInviteLinks is only passed in for groups (invites are group-only, obviously) */}
+          {onOpenInviteLinks && (
+            <button
+              onClick={() => {
+                onOpenInviteLinks();
+                close();
+              }}
+            >
+              🔗 Invite link
+            </button>
+          )}
+          {/* onLeaveGroup is only passed in for groups */}
+          {onLeaveGroup && (
+            <button className={confirmingLeave ? "danger confirming" : "danger"} onClick={handleLeaveClick}>
+              {confirmingLeave ? "Click again to confirm" : "🚪 Leave group"}
+            </button>
+          )}
+          {/* onBlock is only passed in for DMs — blocking is DM-only (see README) */}
+          {onBlock && (
+            <button className={confirmingBlock ? "danger confirming" : "danger"} onClick={handleBlockClick}>
+              {blockedByMe ? "🔓 Unblock user" : confirmingBlock ? "Click again to confirm" : "🚫 Block user"}
+            </button>
+          )}
           <button className={confirmingDelete ? "danger confirming" : "danger"} onClick={handleDeleteClick}>
             {confirmingDelete ? "Click again to confirm" : "🗑 Delete conversation"}
           </button>
@@ -477,7 +792,30 @@ export function VideoMessage({ src, posterSrc, durationSeconds }) {
   );
 }
 
-export function MessageContent({ message, mine }) {
+// Splits message text on @mentions that the server actually recognized
+// (message.mentions — real current group members only) and wraps just
+// those in a highlighted span. Deliberately does NOT highlight arbitrary
+// "@word" text that wasn't a real mention (e.g. "@" as punctuation, or a
+// mention of someone who's since left the group) — only what the backend
+// confirmed.
+function renderMentionAwareText(content, mentionedUsernames) {
+  if (!mentionedUsernames || mentionedUsernames.length === 0) return content;
+  const lowerSet = new Set(mentionedUsernames.map((u) => u.toLowerCase()));
+  const parts = content.split(/(@[a-zA-Z0-9_]+)/g);
+  return parts.map((part, i) => {
+    const handle = part.startsWith("@") ? part.slice(1).toLowerCase() : null;
+    if (handle && lowerSet.has(handle)) {
+      return (
+        <span key={i} className="mention-highlight">
+          {part}
+        </span>
+      );
+    }
+    return part;
+  });
+}
+
+export function MessageContent({ message, mine, myUsername }) {
   const replyPreview = message.replyTo && (
     <div className="reply-preview">
       <span className="reply-preview-sender">{message.replyTo.senderUsername}</span>
@@ -584,11 +922,13 @@ export function MessageContent({ message, mine }) {
     );
   }
 
+  const iWasMentioned = myUsername && message.mentions?.some((u) => u.toLowerCase() === myUsername.toLowerCase());
+
   return (
-    <div className={`bubble ${mine ? "mine" : ""}`}>
+    <div className={`bubble ${mine ? "mine" : ""} ${iWasMentioned ? "mentions-me" : ""}`}>
       {forwardedLabel}
       {replyPreview}
-      {message.content}
+      {renderMentionAwareText(message.content, message.mentions)}
       {message.edited_at && <span className="edited-label"> (edited)</span>}
     </div>
   );
